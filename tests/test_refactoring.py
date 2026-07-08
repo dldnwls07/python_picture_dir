@@ -1,17 +1,13 @@
 import os
 import tempfile
 import unittest
-from datetime import datetime
 
 from diary_categories import (
     matches_filter,
     score_to_tier,
-    EMOTION_LABEL_TO_SCORE,
-    EMOTION_LABEL_TO_WEATHER,
 )
 from manager.file_manager import FileManager
-from domain.model.diary import Diary
-from domain.model.value_objects import EmotionScore, Weather
+from domain.model.value_objects import EmotionScore
 from infrastructure.persistence.csv_diary_repository import CSVDiaryRepository
 from application.service.diary_service import DiaryService
 
@@ -106,7 +102,10 @@ class RefactoringBehaviorTest(unittest.TestCase):
         self.assertEqual(row["actual_weather_text"], "맑음")
         self.assertEqual(row["location_name"], "Seoul")
         self.assertEqual(row["is_hidden"], "True")
-        self.assertEqual(row["password"], "pwd123")
+        # 비밀번호는 SHA-256 해시로 저장된다
+        import hashlib
+        expected_hash = hashlib.sha256("pwd123".encode("utf-8")).hexdigest()
+        self.assertEqual(row["password"], expected_hash)
 
         # 2. Update diary via Service
         success, updated_diary = self.service.save_diary(

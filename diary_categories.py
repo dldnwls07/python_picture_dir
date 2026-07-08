@@ -2,7 +2,6 @@
 일기 카테고리/필터 공용 정의. (DDD 도메인 모델 위임 버전)
 """
 
-from typing import Dict
 from domain.model.value_objects import (
     WEATHER_FILTERS as DOMAIN_WEATHER_FILTERS,
     EMOTION_FILTERS as DOMAIN_EMOTION_FILTERS,

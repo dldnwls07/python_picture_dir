@@ -1,4 +1,4 @@
-from typing import Dict, Tuple
+from typing import Dict
 
 WEATHER_FILTERS = (
     "☀️ 맑음",

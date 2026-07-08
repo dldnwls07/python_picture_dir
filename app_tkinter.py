@@ -30,8 +30,6 @@ import collections
 from diary_categories import (
     ALL_FILTER_OPTIONS,
     DEFAULT_EMOTION,
-    EMOTION_LABEL_TO_SCORE,
-    EMOTION_LABEL_TO_WEATHER,
     MANUAL_EMOTION_OPTIONS,
     MANUAL_WEATHER_OPTIONS,
 )
@@ -1025,7 +1023,8 @@ class AppGUI(tk.Tk):
                 # 결과를 메인 스레드 이벤트 루프로 전달
                 self.after(0, lambda: _on_result(result))
             except Exception as exc:
-                self.after(0, lambda: _on_error(exc))
+                _captured_exc = exc  # except-as 블록 종료 시 exc가 자동 삭제되므로 즉시 저장
+                self.after(0, lambda e=_captured_exc: _on_error(e))
 
         # 백그라운드 스레드로 AI 분석 실행 (GUI 이벤트 루프 비차단)
         thread = threading.Thread(target=_worker, daemon=True)

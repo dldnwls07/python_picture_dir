@@ -7,8 +7,8 @@ import os
 import sys
 from PyQt5.QtWidgets import (
     QMainWindow, QDialog, QMessageBox, QListWidgetItem,
-    QLabel, QComboBox, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
-    QPushButton, QTableWidgetItem, QHeaderView, QApplication, QScrollArea,
+    QLabel, QComboBox, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
+    QPushButton, QTableWidgetItem, QHeaderView, QScrollArea,
     QCheckBox, QInputDialog,
 )
 from PyQt5.QtCore import QDate, Qt
@@ -27,8 +27,6 @@ configure_runtime(PROJECT_ROOT)
 from diary_categories import (
     ALL_FILTER_OPTIONS,
     DEFAULT_EMOTION,
-    EMOTION_LABEL_TO_SCORE,
-    EMOTION_LABEL_TO_WEATHER,
     MANUAL_EMOTION_OPTIONS,
     MANUAL_WEATHER_OPTIONS,
 )

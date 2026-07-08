@@ -3,10 +3,6 @@ EmotionEngine — 감정 분석 엔진 클래스
 감정 사전 대조를 통해 가중치 기반 감정 점수를 산출하고, 날씨를 매핑한다.
 """
 
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.emotion_dict import get_all_emotion_words
 
 
