@@ -27,9 +27,6 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import collections
 
-from engine.text_processor import TextProcessor
-from engine.keyword_analyzer import KeywordAnalyzer
-from engine.ai_helper import AIHelper
 from diary_categories import (
     ALL_FILTER_OPTIONS,
     DEFAULT_EMOTION,
@@ -37,10 +34,8 @@ from diary_categories import (
     EMOTION_LABEL_TO_WEATHER,
     MANUAL_EMOTION_OPTIONS,
     MANUAL_WEATHER_OPTIONS,
-    matches_filter,
-    score_to_tier,
 )
-from manager.file_manager import FileManager
+from application.service.diary_service import DiaryService
 
 
 # 색상 정의 (모던 플랫 테마)
@@ -96,11 +91,8 @@ class AppGUI(tk.Tk):
         self.geometry("960x650")
         self.configure(bg=COLOR_BG)
 
-        # 백엔드 엔진 및 매니저 초기화
-        self._text_processor = TextProcessor()
-        self._keyword_analyzer = KeywordAnalyzer()
-        self._file_manager = FileManager()
-        self._ai_helper = AIHelper()
+        # 백엔드 서비스 초기화
+        self._diary_service = DiaryService()
 
         # 현재 선택된 일기 ID (수정 모드 식별용)
         self._current_diary_id = None
@@ -411,20 +403,17 @@ class AppGUI(tk.Tk):
         self.diary_listbox.delete(0, tk.END)
         self._list_diary_ids.clear()
 
-        all_data = self._file_manager.read_all_csv()
-        # 최신 날짜 순으로 정렬
-        all_data.sort(key=lambda x: x.get("date", ""), reverse=True)
-        
         filter_val = self.filter_var.get()
+        diaries = self._diary_service.get_all_diaries(filter_value=filter_val)
+        # 최신 날짜 순으로 정렬
+        diaries.sort(key=lambda x: x.date, reverse=True)
 
-        for row in all_data:
-            date_str = row.get("date", "")
-            title = row.get("title", "제목 없음")
-            weather = row.get("actual_weather") or row.get("weather", "⛅")
-            diary_id = int(row.get("id", 0))
-            is_hidden = row.get("is_hidden", "False") == "True"
-            if not matches_filter(row, filter_val):
-                continue
+        for diary in diaries:
+            date_str = diary.date
+            title = diary.title or "제목 없음"
+            weather = diary.weather.actual_weather or diary.weather.emoji
+            diary_id = diary.id
+            is_hidden = diary.is_hidden
 
             if is_hidden:
                 display_text = f" 🔒  숨겨진 일기 ({date_str})"
@@ -445,113 +434,109 @@ class AppGUI(tk.Tk):
         index = selection[0]
         diary_id = self._list_diary_ids[index]
 
-        all_data = self._file_manager.read_all_csv()
-        for row in all_data:
-            if int(row.get("id", 0)) == diary_id:
-                # 🔒 비밀 일기 비밀번호 검증
-                is_hidden = row.get("is_hidden", "False") == "True"
-                if is_hidden:
-                    correct_pwd = row.get("password", "")
-                    pwd = simpledialog.askstring(
-                        "🔒 비밀 일기 해제",
-                        "이 일기는 숨겨져 있습니다.\n설정하신 비밀번호를 입력해주세요:",
-                        show="*"
-                    )
-                    if pwd != correct_pwd:
-                        messagebox.showwarning("오류", "비밀번호가 올바르지 않습니다.")
-                        # 선택 해제
-                        self.diary_listbox.selection_clear(0, tk.END)
-                        self._on_new_clicked()
-                        return
+        diary = self._diary_service.get_diary_by_id(diary_id)
+        if diary:
+            # 🔒 비밀 일기 비밀번호 검증
+            if diary.is_hidden:
+                pwd = simpledialog.askstring(
+                    "🔒 비밀 일기 해제",
+                    "이 일기는 숨겨져 있습니다.\n설정하신 비밀번호를 입력해주세요:",
+                    show="*"
+                )
+                if not diary.verify_password(pwd):
+                    messagebox.showwarning("오류", "비밀번호가 올바르지 않습니다.")
+                    # 선택 해제
+                    self.diary_listbox.selection_clear(0, tk.END)
+                    self._on_new_clicked()
+                    return
 
-                self._current_diary_id = diary_id
-                self.date_var.set(row["date"])
-                self.title_var.set(row.get("title", ""))
-                self.location_var.set(row.get("location_name", ""))
-                saved_actual_weather = row.get("actual_weather", "")
-                saved_actual_weather_text = row.get("actual_weather_text", "")
+            self._current_diary_id = diary_id
+            self.date_var.set(diary.date)
+            self.title_var.set(diary.title)
+            self.location_var.set(diary.weather.location)
+            saved_actual_weather = diary.weather.actual_weather
+            saved_actual_weather_text = diary.weather.actual_weather_text
+            
+            # 날씨 1, 2 로드
+            weathers_emoji = [w.strip() for w in saved_actual_weather.split(",") if w.strip()]
+            weathers_text = [w.strip() for w in saved_actual_weather_text.split(",") if w.strip()]
+            
+            def find_weather_label(emoji, text):
+                label = f"{emoji} {text}".strip()
+                for opt in MANUAL_WEATHER_OPTIONS:
+                    if opt.strip() == label:
+                        return opt
+                return None
                 
-                # 날씨 1, 2 로드
-                weathers_emoji = [w.strip() for w in saved_actual_weather.split(",") if w.strip()]
-                weathers_text = [w.strip() for w in saved_actual_weather_text.split(",") if w.strip()]
+            if len(weathers_emoji) >= 1:
+                lbl1 = find_weather_label(weathers_emoji[0], weathers_text[0] if len(weathers_text) >= 1 else "")
+                self.actual_weather_var.set(lbl1 or MANUAL_WEATHER_OPTIONS[0])
+            else:
+                self.actual_weather_var.set(MANUAL_WEATHER_OPTIONS[0])
                 
-                def find_weather_label(emoji, text):
-                    label = f"{emoji} {text}".strip()
-                    for opt in MANUAL_WEATHER_OPTIONS:
-                        if opt.strip() == label:
-                            return opt
-                    return None
-                    
-                if len(weathers_emoji) >= 1:
-                    lbl1 = find_weather_label(weathers_emoji[0], weathers_text[0] if len(weathers_text) >= 1 else "")
-                    self.actual_weather_var.set(lbl1 or MANUAL_WEATHER_OPTIONS[0])
-                else:
-                    self.actual_weather_var.set(MANUAL_WEATHER_OPTIONS[0])
-                    
-                if len(weathers_emoji) >= 2:
-                    lbl2 = find_weather_label(weathers_emoji[1], weathers_text[1] if len(weathers_text) >= 2 else "")
-                    self.actual_weather_var2.set(lbl2 or "선택안함")
-                else:
-                    self.actual_weather_var2.set("선택안함")
-                    
-                # 감정 1, 2 로드
-                saved_emotion_label = row.get("emotion_label", DEFAULT_EMOTION) or DEFAULT_EMOTION
-                emotions = [e.strip() for e in saved_emotion_label.split(",") if e.strip()]
+            if len(weathers_emoji) >= 2:
+                lbl2 = find_weather_label(weathers_emoji[1], weathers_text[1] if len(weathers_text) >= 2 else "")
+                self.actual_weather_var2.set(lbl2 or "선택안함")
+            else:
+                self.actual_weather_var2.set("선택안함")
                 
-                if len(emotions) >= 1:
-                    if emotions[0] in MANUAL_EMOTION_OPTIONS:
-                        self.emotion_var.set(emotions[0])
-                    else:
-                        self.emotion_var.set(DEFAULT_EMOTION)
+            # 감정 1, 2 로드
+            saved_emotion_label = diary.emotion_label or DEFAULT_EMOTION
+            emotions = [e.strip() for e in saved_emotion_label.split(",") if e.strip()]
+            
+            if len(emotions) >= 1:
+                if emotions[0] in MANUAL_EMOTION_OPTIONS:
+                    self.emotion_var.set(emotions[0])
                 else:
                     self.emotion_var.set(DEFAULT_EMOTION)
-                    
-                if len(emotions) >= 2:
-                    if emotions[1] in MANUAL_EMOTION_OPTIONS:
-                        self.emotion_var2.set(emotions[1])
-                    else:
-                        self.emotion_var2.set("선택안함")
+            else:
+                self.emotion_var.set(DEFAULT_EMOTION)
+                
+            if len(emotions) >= 2:
+                if emotions[1] in MANUAL_EMOTION_OPTIONS:
+                    self.emotion_var2.set(emotions[1])
                 else:
                     self.emotion_var2.set("선택안함")
-                
-                # Text 위젯 클리어 후 텍스트 세팅
-                self.content_text.delete("1.0", tk.END)
-                self.content_text.insert(tk.END, row.get("content", ""))
+            else:
+                self.emotion_var2.set("선택안함")
+            
+            # Text 위젯 클리어 후 텍스트 세팅
+            self.content_text.delete("1.0", tk.END)
+            self.content_text.insert(tk.END, diary.content)
 
-                # 이미지 세팅
-                self._existing_image_path = ""
-                self._remove_existing_image = False
-                self._clear_canvas(mark_removed=False)
-                img_path = row.get("image_path", "")
-                if img_path and os.path.exists(img_path):
-                    try:
-                        loaded_img = Image.open(img_path)
-                        self.canvas_image_ref = ImageTk.PhotoImage(loaded_img)
-                        self.canvas.create_image(0, 0, anchor="nw", image=self.canvas_image_ref)
-                        self._draw_image = loaded_img.copy()
-                        self._draw_tool = ImageDraw.Draw(self._draw_image)
-                        self._existing_image_path = img_path
-                        self._remove_existing_image = False
-                        self._canvas_dirty = False
-                    except Exception as e:
-                        print(f"이미지 로드 실패: {e}")
+            # 이미지 세팅
+            self._existing_image_path = ""
+            self._remove_existing_image = False
+            self._clear_canvas(mark_removed=False)
+            img_path = diary.image_path
+            if img_path and os.path.exists(img_path):
+                try:
+                    loaded_img = Image.open(img_path)
+                    self.canvas_image_ref = ImageTk.PhotoImage(loaded_img)
+                    self.canvas.create_image(0, 0, anchor="nw", image=self.canvas_image_ref)
+                    self._draw_image = loaded_img.copy()
+                    self._draw_tool = ImageDraw.Draw(self._draw_image)
+                    self._existing_image_path = img_path
+                    self._remove_existing_image = False
+                    self._canvas_dirty = False
+                except Exception as e:
+                    print(f"이미지 로드 실패: {e}")
 
-                # 날씨 & 스코어 렌더링
-                weather = row.get("weather", "⛅")
-                score = int(row.get("score", 0))
-                tier = score_to_tier(score)
-                self.weather_label.config(text=weather)
-                emotion_label = row.get("emotion_label", DEFAULT_EMOTION) or DEFAULT_EMOTION
-                self.score_label.config(text=f"감정 상태: {emotion_label} ({score}점, 티어: {tier})")
-                self.hide_var.set(is_hidden)
-                actual_weather_line = saved_actual_weather or "미입력"
-                location_line = row.get("location_name", "") or "미입력"
-                self.detail_label.config(text=f"현재 날씨: {actual_weather_line}\n위치: {location_line}")
+            # 날씨 & 스코어 렌더링
+            weather = diary.weather.emoji
+            score = int(diary.emotion_score.value)
+            tier = diary.emotion_score.tier
+            self.weather_label.config(text=weather)
+            emotion_label = diary.emotion_label or DEFAULT_EMOTION
+            self.score_label.config(text=f"감정 상태: {emotion_label} ({score}점, 티어: {tier})")
+            self.hide_var.set(diary.is_hidden)
+            actual_weather_line = saved_actual_weather or "미입력"
+            location_line = diary.weather.location or "미입력"
+            self.detail_label.config(text=f"현재 날씨: {actual_weather_line}\n위치: {location_line}")
 
-                self.btn_delete.config(state="normal")
-                self.btn_delete.configure(bg=COLOR_DANGER)
-                self.statusbar.config(text=f"📖 {row['date']} — {row.get('title', '')}")
-                break
+            self.btn_delete.config(state="normal")
+            self.btn_delete.configure(bg=COLOR_DANGER)
+            self.statusbar.config(text=f"📖 {diary.date} — {diary.title or ''}")
 
     def on_save_clicked(self):
         """'저장' 버튼 클릭: 사용자 입력 기반 메타데이터와 일기를 저장한다."""
@@ -563,75 +548,30 @@ class AppGUI(tk.Tk):
         w_val1 = self.actual_weather_var.get().strip()
         w_val2 = self.actual_weather_var2.get().strip()
         
-        def get_weather_emoji(val):
-            return val.split(" ")[0] if val else ""
-        def get_weather_text(val):
-            return val.split(" ", 1)[1] if " " in val else val
-            
-        emoji1 = get_weather_emoji(w_val1)
-        text1 = get_weather_text(w_val1)
-        
-        if w_val2 and w_val2 != "선택안함":
-            emoji2 = get_weather_emoji(w_val2)
-            text2 = get_weather_text(w_val2)
-            actual_weather_emoji = f"{emoji1},{emoji2}"
-            actual_weather_text = f"{text1},{text2}"
-            actual_weather_value = f"{w_val1}, {w_val2}"
-        else:
-            actual_weather_emoji = emoji1
-            actual_weather_text = text1
-            actual_weather_value = w_val1
-            
         # 감정 1, 2 처리
         e_label1 = self.emotion_var.get().strip()
         e_label2 = self.emotion_var2.get().strip()
-        
-        if e_label2 and e_label2 != "선택안함":
-            emotion_label = f"{e_label1},{e_label2}"
-            score1 = EMOTION_LABEL_TO_SCORE.get(e_label1, 0)
-            score2 = EMOTION_LABEL_TO_SCORE.get(e_label2, 0)
-            score = int(round((score1 + score2) / 2.0))
-            we1, wt1 = EMOTION_LABEL_TO_WEATHER.get(e_label1, ("⛅", "보통"))
-            we2, wt2 = EMOTION_LABEL_TO_WEATHER.get(e_label2, ("⛅", "보통"))
-            weather_emoji = f"{we1},{we2}"
-            weather_text = f"{wt1},{wt2}"
-        else:
-            emotion_label = e_label1
-            score = EMOTION_LABEL_TO_SCORE.get(e_label1, 0)
-            weather_emoji, weather_text = EMOTION_LABEL_TO_WEATHER.get(e_label1, ("⛅", "보통"))
-
-        result = {
-            "score": score,
-            "weather_emoji": weather_emoji,
-            "weather_text": weather_text,
-            "emotion_label": emotion_label,
-            "actual_weather": actual_weather_emoji,
-            "actual_weather_text": actual_weather_text,
-            "location_name": location_name,
-        }
 
         # 3. 그림판 이미지 저장 로직
-        image_path = ""
-        remove_existing_image = False
+        image_data = None
         if self._draw_image and self._is_canvas_modified():
-            image_path = self._file_manager.save_diary_image(self._draw_image)
-            remove_existing_image = bool(self._existing_image_path)
-        elif self._current_diary_id is not None and self._remove_existing_image:
+            image_data = self._draw_image
+
+        remove_existing_image = False
+        if self._current_diary_id is not None and self._remove_existing_image:
             remove_existing_image = True
 
         # 비밀 일기(숨기기) 및 비밀번호 처리
-        is_hidden_val = "False"
+        is_hidden_val = False
         password_val = ""
         if self.hide_var.get():
-            is_hidden_val = "True"
+            is_hidden_val = True
             # 기존 저장되어 있던 비밀번호가 있는지 로드
             existing_pwd = ""
             if self._current_diary_id is not None:
-                all_data = self._file_manager.read_all_csv()
-                for r in all_data:
-                    if int(r.get("id", 0)) == self._current_diary_id:
-                        existing_pwd = r.get("password", "")
-                        break
+                existing_diary = self._diary_service.get_diary_by_id(self._current_diary_id)
+                if existing_diary:
+                    existing_pwd = existing_diary.password
             password_val = existing_pwd
             if not password_val:
                 pwd = simpledialog.askstring(
@@ -643,53 +583,50 @@ class AppGUI(tk.Tk):
                     password_val = pwd.strip()
                 else:
                     self.hide_var.set(False)
-                    is_hidden_val = "False"
+                    is_hidden_val = False
                     password_val = ""
 
-        data_dict = {
-            "date": date_str,
-            "title": title,
-            "content": content,
-            "score": score,
-            "emotion_label": emotion_label,
-            "weather": weather_emoji,
-            "actual_weather": actual_weather_emoji,
-            "actual_weather_text": actual_weather_text,
-            "weather_source": "manual",
-            "location_name": location_name,
-            "remove_image": remove_existing_image,
-            "is_hidden": is_hidden_val,
-            "password": password_val,
-        }
-        
-        # 새 그림이 저장되었으면 경로 갱신
-        if image_path:
-            data_dict["image_path"] = image_path
-        elif remove_existing_image:
-            data_dict["image_path"] = ""
+        # 4. 서비스 호출하여 일기 등록/수정
+        success, diary = self._diary_service.save_diary(
+            diary_id=self._current_diary_id,
+            date=date_str,
+            title=title,
+            content=content,
+            location_name=location_name,
+            actual_weather1=w_val1,
+            actual_weather2=w_val2,
+            emotion1=e_label1,
+            emotion2=e_label2,
+            is_hidden=is_hidden_val,
+            password=password_val,
+            image_data=image_data,
+            remove_image=remove_existing_image
+        )
 
-        # 4. 파일 저장/수정 (FileManager의 원자적 파일 교체 로직 호출)
-        if self._current_diary_id is not None:
-            # 수정 모드 시 이전 image_path를 덮어쓰지 않기 위해 file_manager 내부 로직 의존
-            success = self._file_manager.update_by_id(self._current_diary_id, data_dict)
-            action = "수정"
-        else:
-            success = self._file_manager.append_to_csv(data_dict)
-            action = "저장"
+        action = "수정" if self._current_diary_id is not None else "저장"
 
-        if success:
-            if image_path:
-                self._existing_image_path = image_path
+        if success and diary:
+            if image_data:
+                self._existing_image_path = diary.image_path
                 self._remove_existing_image = False
                 self._canvas_dirty = False
             elif remove_existing_image:
                 self._existing_image_path = ""
                 self._remove_existing_image = False
-            self._update_weather_ui(result)
+                
+            self._update_weather_ui({
+                "weather_emoji": diary.weather.emoji,
+                "emotion_label": diary.emotion_label,
+                "score": int(diary.emotion_score.value),
+                "actual_weather": diary.weather.actual_weather,
+                "actual_weather_text": diary.weather.actual_weather_text,
+                "location_name": diary.weather.location,
+            })
             self._load_diary_list()
             
             # 성공 상태 표시
-            msg = f"✅ 일기가 {action}되었습니다! 감정: {emotion_label} | 현재 날씨: {actual_weather_value}"
+            actual_weather_value = f"{w_val1}, {w_val2}" if w_val2 and w_val2 != "선택안함" else w_val1
+            msg = f"✅ 일기가 {action}되었습니다! 감정: {diary.emotion_label} | 현재 날씨: {actual_weather_value}"
             self.statusbar.config(text=msg, fg=COLOR_SUCCESS)
             # 신규 작성 후 수정모드로 진입하기 위해 최신 데이터 로드
             if action == "저장":
@@ -705,7 +642,7 @@ class AppGUI(tk.Tk):
 
         reply = messagebox.askyesno("삭제 확인", "정말 이 일기를 삭제하시겠습니까?")
         if reply:
-            success = self._file_manager.delete_by_id(self._current_diary_id)
+            success = self._diary_service.delete_diary(self._current_diary_id)
             if success:
                 self._on_new_clicked()
                 self._load_diary_list()
@@ -881,7 +818,7 @@ class AppGUI(tk.Tk):
                 messagebox.showerror("오류", "날짜 형식이 잘못되었습니다. (YYYY-MM-DD)")
                 return
 
-            entries = self._file_manager.read_by_date_range(start, end)
+            entries = self._diary_service.get_diaries_by_date_range(start, end)
             if not entries:
                 wc_display_label.config(text="해당 기간에 작성된 일기가 없습니다.", image="")
                 # 테이블 비우기
@@ -891,8 +828,7 @@ class AppGUI(tk.Tk):
                 return
 
             # 일기 내용 병합 및 토큰 분석
-            all_content = " ".join(row.get("content", "") for row in entries)
-            words = self._text_processor.process(all_content)
+            words = self._diary_service.get_word_list_from_diaries(entries)
 
             if not words:
                 wc_display_label.config(text="분석할 수 있는 키워드가 없습니다.", image="")
@@ -905,14 +841,12 @@ class AppGUI(tk.Tk):
             for item in tree.get_children():
                 tree.delete(item)
                 
-            top_keywords = self._keyword_analyzer.get_top_keywords(words, top_n=10)
+            top_keywords, wc_bytes = self._diary_service.analyze_keywords(entries, wordcloud_width=380, wordcloud_height=280)
             for idx, (word, count) in enumerate(top_keywords):
                 tree.insert("", "end", values=(idx + 1, word, count))
 
             # 2. 워드클라우드 이미지 렌더링
             try:
-                # 350x260 해상도에 맞게 WordCloud 바이트 생성
-                wc_bytes = self._keyword_analyzer.generate_wordcloud_bytes(words, width=380, height=280)
                 if wc_bytes:
                     img = Image.open(BytesIO(wc_bytes))
                     photo = ImageTk.PhotoImage(img)
@@ -935,6 +869,8 @@ class AppGUI(tk.Tk):
 
     def show_ai_empathy_window(self):
         """AI의 일기 요약 및 따뜻한 공감 멘트를 표시하는 창을 연다."""
+        import threading
+
         content = self.content_text.get("1.0", tk.END).strip()
         if not content:
             self.display_alert("공감할 일기 내용이 없습니다. 내용을 먼저 입력해주세요!")
@@ -996,10 +932,6 @@ class AppGUI(tk.Tk):
                 except Exception as e:
                     print(f"PIL 이미지 Base64 변환 실패: {e}")
 
-        # UI 렌더링 갱신
-        dialog.update_idletasks()
-        dialog.update()
-
         date_str = self.date_var.get().strip()
         location = self.location_var.get().strip()
         # 날씨 1, 2 결합
@@ -1012,20 +944,10 @@ class AppGUI(tk.Tk):
         e2 = self.emotion_var2.get().strip()
         emotion = f"{e1}, {e2}" if e2 and e2 != "선택안함" else e1
 
-        # 마우스 커서 대기 상태
-        self.config(cursor="watch")
-        dialog.config(cursor="watch")
-        dialog.update()
-
-        try:
-            result = self._ai_helper.analyze_diary(
-                date=date_str,
-                content=content,
-                location=location,
-                weather=weather,
-                emotion=emotion,
-                image_base64=image_base64
-            )
+        def _on_result(result):
+            """AI 결과를 GUI 메인 스레드에서 안전하게 렌더링."""
+            if not dialog.winfo_exists():
+                return
 
             # 로딩 라벨 제거
             status_label.pack_forget()
@@ -1033,7 +955,7 @@ class AppGUI(tk.Tk):
             # 요약 섹션
             summary_frame = ttk.LabelFrame(container, text="📝 1줄 요약", padding=10)
             summary_frame.pack(fill="x", pady=(0, 15))
-            
+
             summary_text = ttk.Label(
                 summary_frame,
                 text=result["summary"],
@@ -1046,7 +968,7 @@ class AppGUI(tk.Tk):
             # 공감 섹션
             empathy_frame = ttk.LabelFrame(container, text="💖 AI의 공감과 한마디", padding=10)
             empathy_frame.pack(fill="x", pady=(0, 15))
-            
+
             empathy_text = ttk.Label(
                 empathy_frame,
                 text=result["empathy"],
@@ -1059,7 +981,7 @@ class AppGUI(tk.Tk):
             # 그림 분석 섹션
             drawing_frame = ttk.LabelFrame(container, text="🎨 그림 분석", padding=10)
             drawing_frame.pack(fill="x")
-            
+
             drawing_text = ttk.Label(
                 drawing_frame,
                 text=result["drawing_analysis"],
@@ -1070,25 +992,45 @@ class AppGUI(tk.Tk):
             drawing_text.pack(fill="x", expand=True)
 
             ok_button.configure(state="normal")
-            
+
             # 동적 창 크기 조절
             dialog.update_idletasks()
             required_height = container.winfo_reqheight() + 50
             dialog.geometry(f"500x{required_height}")
-        except Exception as e:
+
+        def _on_error(exc):
+            """오류 발생 시 GUI 메인 스레드에서 안전하게 표시."""
             import traceback
             traceback.print_exc()
-            status_var.set(f"❌ AI 분석에 실패했습니다:\n\n{str(e)}")
+            if not dialog.winfo_exists():
+                return
+            status_var.set(f"❌ AI 분석에 실패했습니다:\n\n{str(exc)}")
             status_label.configure(foreground=COLOR_DANGER)
             ok_button.configure(state="normal")
-            
-            # 실패 시에도 크기 조절
             dialog.update_idletasks()
             required_height = container.winfo_reqheight() + 50
             dialog.geometry(f"500x{required_height}")
-        finally:
-            self.config(cursor="")
-            dialog.config(cursor="")
+
+        def _worker():
+            """백그라운드 스레드: 블로킹 네트워크 요청 실행."""
+            try:
+                result = self._diary_service.analyze_ai(
+                    date=date_str,
+                    content=content,
+                    location=location,
+                    weather=weather,
+                    emotion=emotion,
+                    image_base64=image_base64
+                )
+                # 결과를 메인 스레드 이벤트 루프로 전달
+                self.after(0, lambda: _on_result(result))
+            except Exception as exc:
+                self.after(0, lambda: _on_error(exc))
+
+        # 백그라운드 스레드로 AI 분석 실행 (GUI 이벤트 루프 비차단)
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
 
     # ── 월간 감정 통계 창 ──────────────────────────
 
@@ -1147,7 +1089,7 @@ class AppGUI(tk.Tk):
                 next_month_1st = datetime(year, month + 1, 1)
             end_date = (next_month_1st - timedelta(days=1)).strftime("%Y-%m-%d")
 
-            entries = self._file_manager.read_by_date_range(start_date, end_date)
+            entries = self._diary_service.get_diaries_by_date_range(start_date, end_date)
             
             # 기존 위젯 정리
             for widget in chart_frame.winfo_children():
@@ -1159,7 +1101,7 @@ class AppGUI(tk.Tk):
                 return
 
             # 날짜순 정렬
-            entries.sort(key=lambda x: x.get("date", ""))
+            entries.sort(key=lambda x: x.date)
             
             dates = []
             scores = []
@@ -1168,12 +1110,9 @@ class AppGUI(tk.Tk):
             # 중복 일자는 딕셔너리로 평균화 (예외 처리 원칙)
             day_score_map = collections.defaultdict(list)
             
-            for row in entries:
-                date_val = row.get("date", "")
-                try:
-                    score = int(row.get("score", 0))
-                except ValueError:
-                    score = 0
+            for diary in entries:
+                date_val = diary.date
+                score = diary.emotion_score.value
                     
                 if len(date_val) >= 10:
                     day_str = date_val[8:10]

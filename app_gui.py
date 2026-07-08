@@ -24,9 +24,6 @@ from runtime_env import configure_runtime
 
 configure_runtime(PROJECT_ROOT)
 
-from engine.keyword_analyzer import KeywordAnalyzer
-from engine.text_processor import TextProcessor
-from engine.ai_helper import AIHelper
 from diary_categories import (
     ALL_FILTER_OPTIONS,
     DEFAULT_EMOTION,
@@ -34,10 +31,8 @@ from diary_categories import (
     EMOTION_LABEL_TO_WEATHER,
     MANUAL_EMOTION_OPTIONS,
     MANUAL_WEATHER_OPTIONS,
-    matches_filter,
-    score_to_tier,
 )
-from manager.file_manager import FileManager
+from application.service.diary_service import DiaryService
 
 # .ui 파일 경로
 UI_DIR = os.path.join(PROJECT_ROOT, "ui")
@@ -144,11 +139,8 @@ class AppGUI(QMainWindow):
         uic.loadUi(MAIN_UI, self)
         self.setWindowTitle("내 감정은 오늘도 F등급 ☀️⛅🌧️")
 
-        # 엔진 및 매니저 초기화
-        self._keyword_analyzer = KeywordAnalyzer()
-        self._text_processor = TextProcessor()
-        self._file_manager = FileManager()
-        self._ai_helper = AIHelper()
+        # 서비스 초기화
+        self._diary_service = DiaryService()
 
         # 현재 선택된 일기 ID (수정 모드용)
         self._current_diary_id = None
@@ -158,6 +150,28 @@ class AppGUI(QMainWindow):
         self._init_ui()
         self._connect_events()
         self._load_diary_list()
+
+    @property
+    def _file_manager(self):
+        return self._diary_service._repository
+
+    @_file_manager.setter
+    def _file_manager(self, value):
+        from infrastructure.persistence.csv_diary_repository import CSVDiaryRepository
+        repo = CSVDiaryRepository(value.filepath)
+        self._diary_service = DiaryService(repository=repo)
+
+    @property
+    def _ai_helper(self):
+        return self._diary_service._ai_service._helper
+
+    @property
+    def _keyword_analyzer(self):
+        return self._diary_service._keyword_analyzer
+
+    @property
+    def _text_processor(self):
+        return self._diary_service._text_processor
 
     def _init_ui(self):
         """메인 화면 초기 설정."""
@@ -337,42 +351,9 @@ class AppGUI(QMainWindow):
         w_val1 = self.actualWeatherComboBox.currentText().strip()
         w_val2 = self.actualWeatherComboBox2.currentText().strip()
         
-        def get_weather_emoji(val):
-            return val.split(" ")[0] if val else ""
-        def get_weather_text(val):
-            return val.split(" ", 1)[1] if " " in val else val
-            
-        emoji1 = get_weather_emoji(w_val1)
-        text1 = get_weather_text(w_val1)
-        
-        if w_val2 and w_val2 != "선택안함":
-            emoji2 = get_weather_emoji(w_val2)
-            text2 = get_weather_text(w_val2)
-            actual_weather_emoji = f"{emoji1},{emoji2}"
-            actual_weather_text = f"{text1},{text2}"
-            actual_weather_value = f"{w_val1}, {w_val2}"
-        else:
-            actual_weather_emoji = emoji1
-            actual_weather_text = text1
-            actual_weather_value = w_val1
-            
         # 감정 1, 2 처리
         e_label1 = self.emotionComboBox.currentText().strip()
         e_label2 = self.emotionComboBox2.currentText().strip()
-        
-        if e_label2 and e_label2 != "선택안함":
-            emotion_label = f"{e_label1},{e_label2}"
-            score1 = EMOTION_LABEL_TO_SCORE.get(e_label1, 0)
-            score2 = EMOTION_LABEL_TO_SCORE.get(e_label2, 0)
-            score = int(round((score1 + score2) / 2.0))
-            we1, wt1 = EMOTION_LABEL_TO_WEATHER.get(e_label1, ("⛅", "보통"))
-            we2, wt2 = EMOTION_LABEL_TO_WEATHER.get(e_label2, ("⛅", "보통"))
-            weather_emoji = f"{we1},{we2}"
-            weather_text = f"{wt1},{wt2}"
-        else:
-            emotion_label = e_label1
-            score = EMOTION_LABEL_TO_SCORE.get(e_label1, 0)
-            weather_emoji, weather_text = EMOTION_LABEL_TO_WEATHER.get(e_label1, ("⛅", "보통"))
 
         # 입력 검증
         if not content and not self._has_drawn_content():
@@ -381,37 +362,26 @@ class AppGUI(QMainWindow):
         if not title:
             title = f"{date_str} 일기"
 
-        result = {
-            "score": score,
-            "weather_emoji": weather_emoji,
-            "weather_text": weather_text,
-            "emotion_label": emotion_label,
-            "actual_weather": actual_weather_emoji,
-            "actual_weather_text": actual_weather_text,
-            "location_name": location_name,
-        }
-
-        image_path = ""
-        remove_existing_image = False
+        # 그림 이미지 저장 로직
+        image_data = None
         if self.drawingCanvas.is_modified():
-            image_path = self._file_manager.save_diary_image(self.drawingCanvas.export_image())
-            remove_existing_image = bool(self._existing_image_path)
-        elif self._current_diary_id is not None and self._remove_existing_image:
+            image_data = self.drawingCanvas.export_image()
+
+        remove_existing_image = False
+        if self._current_diary_id is not None and self._remove_existing_image:
             remove_existing_image = True
 
         # 비밀 일기(숨기기) 및 비밀번호 처리
-        is_hidden_val = "False"
+        is_hidden_val = False
         password_val = ""
         if self.hideCheckBox.isChecked():
-            is_hidden_val = "True"
+            is_hidden_val = True
             # 기존 저장되어 있던 비밀번호가 있는지 로드
             existing_pwd = ""
             if self._current_diary_id is not None:
-                all_data = self._file_manager.read_all_csv()
-                for r in all_data:
-                    if int(r.get("id", 0)) == self._current_diary_id:
-                        existing_pwd = r.get("password", "")
-                        break
+                existing_diary = self._diary_service.get_diary_by_id(self._current_diary_id)
+                if existing_diary:
+                    existing_pwd = existing_diary.password
             password_val = existing_pwd
             if not password_val:
                 pwd, ok = QInputDialog.getText(
@@ -423,48 +393,48 @@ class AppGUI(QMainWindow):
                     password_val = pwd.strip()
                 else:
                     self.hideCheckBox.setChecked(False)
-                    is_hidden_val = "False"
+                    is_hidden_val = False
                     password_val = ""
 
-        data_dict = {
-            "date": date_str,
-            "title": title,
-            "content": content,
-            "score": score,
-            "emotion_label": emotion_label,
-            "weather": weather_emoji,
-            "actual_weather": actual_weather_emoji,
-            "actual_weather_text": actual_weather_text,
-            "weather_source": "manual",
-            "location_name": location_name,
-            "remove_image": remove_existing_image,
-            "is_hidden": is_hidden_val,
-            "password": password_val,
-        }
-        if image_path:
-            data_dict["image_path"] = image_path
-        elif remove_existing_image:
-            data_dict["image_path"] = ""
+        # 서비스 호출하여 일기 등록/수정
+        success, diary = self._diary_service.save_diary(
+            diary_id=self._current_diary_id,
+            date=date_str,
+            title=title,
+            content=content,
+            location_name=location_name,
+            actual_weather1=w_val1,
+            actual_weather2=w_val2,
+            emotion1=e_label1,
+            emotion2=e_label2,
+            is_hidden=is_hidden_val,
+            password=password_val,
+            image_data=image_data,
+            remove_image=remove_existing_image
+        )
 
-        # 저장 or 수정
-        if self._current_diary_id is not None:
-            success = self._file_manager.update_by_id(self._current_diary_id, data_dict)
-            action = "수정"
-        else:
-            success = self._file_manager.append_to_csv(data_dict)
-            action = "저장"
+        action = "수정" if self._current_diary_id is not None else "저장"
 
-        if success:
-            if image_path:
-                self._existing_image_path = image_path
+        if success and diary:
+            if image_data:
+                self._existing_image_path = diary.image_path
                 self._remove_existing_image = False
             elif remove_existing_image:
                 self._existing_image_path = ""
                 self._remove_existing_image = False
-            self.update_weather_icon(result)
+                
+            self.update_weather_icon({
+                "weather_emoji": diary.weather.emoji,
+                "emotion_label": diary.emotion_label,
+                "score": int(diary.emotion_score.value),
+                "actual_weather": diary.weather.actual_weather,
+                "actual_weather_text": diary.weather.actual_weather_text,
+                "location_name": diary.weather.location,
+            })
             self._load_diary_list()
+            actual_weather_value = f"{w_val1}, {w_val2}" if w_val2 and w_val2 != "선택안함" else w_val1
             self._set_status_message(
-                f"✅ 일기가 {action}되었습니다! 감정: {emotion_label} | 현재 날씨: {actual_weather_value}"
+                f"✅ 일기가 {action}되었습니다! 감정: {diary.emotion_label} | 현재 날씨: {actual_weather_value}"
             )
         else:
             self.display_alert(f"일기 {action}에 실패했습니다.")
@@ -482,7 +452,7 @@ class AppGUI(QMainWindow):
             QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
-            success = self._file_manager.delete_by_id(self._current_diary_id)
+            success = self._diary_service.delete_diary(self._current_diary_id)
             if success:
                 self._on_new_clicked()
                 self._load_diary_list()
@@ -520,103 +490,99 @@ class AppGUI(QMainWindow):
         if diary_id is None:
             return
 
-        # CSV에서 해당 일기 찾기
-        all_data = self._file_manager.read_all_csv()
-        for row in all_data:
-            if int(row.get("id", 0)) == diary_id:
-                # 🔒 비밀 일기 비밀번호 검증
-                is_hidden = row.get("is_hidden", "False") == "True"
-                if is_hidden:
-                    correct_pwd = row.get("password", "")
-                    pwd, ok = QInputDialog.getText(
-                        self, "🔒 비밀 일기 해제",
-                        "이 일기는 숨겨져 있습니다.\n설정하신 비밀번호를 입력해주세요:",
-                        QLineEdit.Password
-                    )
-                    if not ok or pwd != correct_pwd:
-                        QMessageBox.warning(self, "오류", "비밀번호가 올바르지 않습니다.")
-                        # 선택 해제
-                        self.diaryListWidget.blockSignals(True)
-                        self.diaryListWidget.clearSelection()
-                        self._on_new_clicked()
-                        self.diaryListWidget.blockSignals(False)
-                        return
+        # 서비스에서 해당 일기 조회
+        diary = self._diary_service.get_diary_by_id(diary_id)
+        if diary:
+            # 🔒 비밀 일기 비밀번호 검증
+            if diary.is_hidden:
+                pwd, ok = QInputDialog.getText(
+                    self, "🔒 비밀 일기 해제",
+                    "이 일기는 숨겨져 있습니다.\n설정하신 비밀번호를 입력해주세요:",
+                    QLineEdit.Password
+                )
+                if not ok or not diary.verify_password(pwd):
+                    QMessageBox.warning(self, "오류", "비밀번호가 올바르지 않습니다.")
+                    # 선택 해제
+                    self.diaryListWidget.blockSignals(True)
+                    self.diaryListWidget.clearSelection()
+                    self._on_new_clicked()
+                    self.diaryListWidget.blockSignals(False)
+                    return
 
-                self._current_diary_id = diary_id
-                self.dateEdit.setDate(QDate.fromString(row["date"], "yyyy-MM-dd"))
-                self.titleEdit.setText(row.get("title", ""))
-                self.locationLineEdit.setText(row.get("location_name", ""))
-                actual_weather_val = row.get('actual_weather', '')
-                actual_weather_text_val = row.get('actual_weather_text', '')
+            self._current_diary_id = diary_id
+            self.dateEdit.setDate(QDate.fromString(diary.date, "yyyy-MM-dd"))
+            self.titleEdit.setText(diary.title)
+            self.locationLineEdit.setText(diary.weather.location)
+            actual_weather_val = diary.weather.actual_weather
+            actual_weather_text_val = diary.weather.actual_weather_text
+            
+            # 날씨 1, 2 로드
+            weathers_emoji = [w.strip() for w in actual_weather_val.split(",") if w.strip()]
+            weathers_text = [w.strip() for w in actual_weather_text_val.split(",") if w.strip()]
+            
+            def find_weather_label(emoji, text):
+                label = f"{emoji} {text}".strip()
+                for opt in MANUAL_WEATHER_OPTIONS:
+                    if opt.strip() == label:
+                        return opt
+                return None
                 
-                # 날씨 1, 2 로드
-                weathers_emoji = [w.strip() for w in actual_weather_val.split(",") if w.strip()]
-                weathers_text = [w.strip() for w in actual_weather_text_val.split(",") if w.strip()]
+            if len(weathers_emoji) >= 1:
+                lbl1 = find_weather_label(weathers_emoji[0], weathers_text[0] if len(weathers_text) >= 1 else "")
+                self.actualWeatherComboBox.setCurrentText(lbl1 or MANUAL_WEATHER_OPTIONS[0])
+            else:
+                self.actualWeatherComboBox.setCurrentText(MANUAL_WEATHER_OPTIONS[0])
                 
-                def find_weather_label(emoji, text):
-                    label = f"{emoji} {text}".strip()
-                    for opt in MANUAL_WEATHER_OPTIONS:
-                        if opt.strip() == label:
-                            return opt
-                    return None
-                    
-                if len(weathers_emoji) >= 1:
-                    lbl1 = find_weather_label(weathers_emoji[0], weathers_text[0] if len(weathers_text) >= 1 else "")
-                    self.actualWeatherComboBox.setCurrentText(lbl1 or MANUAL_WEATHER_OPTIONS[0])
-                else:
-                    self.actualWeatherComboBox.setCurrentText(MANUAL_WEATHER_OPTIONS[0])
-                    
-                if len(weathers_emoji) >= 2:
-                    lbl2 = find_weather_label(weathers_emoji[1], weathers_text[1] if len(weathers_text) >= 2 else "")
-                    self.actualWeatherComboBox2.setCurrentText(lbl2 or "선택안함")
-                else:
-                    self.actualWeatherComboBox2.setCurrentText("선택안함")
-                    
-                emotion_label_val = row.get("emotion_label", DEFAULT_EMOTION) or DEFAULT_EMOTION
-                emotion_label = emotion_label_val
-                emotions = [e.strip() for e in emotion_label_val.split(",") if e.strip()]
+            if len(weathers_emoji) >= 2:
+                lbl2 = find_weather_label(weathers_emoji[1], weathers_text[1] if len(weathers_text) >= 2 else "")
+                self.actualWeatherComboBox2.setCurrentText(lbl2 or "선택안함")
+            else:
+                self.actualWeatherComboBox2.setCurrentText("선택안함")
                 
-                if len(emotions) >= 1:
-                    if emotions[0] in MANUAL_EMOTION_OPTIONS:
-                        self.emotionComboBox.setCurrentText(emotions[0])
-                    else:
-                        self.emotionComboBox.setCurrentText(DEFAULT_EMOTION)
+            emotion_label_val = diary.emotion_label or DEFAULT_EMOTION
+            emotion_label = emotion_label_val
+            emotions = [e.strip() for e in emotion_label_val.split(",") if e.strip()]
+            
+            if len(emotions) >= 1:
+                if emotions[0] in MANUAL_EMOTION_OPTIONS:
+                    self.emotionComboBox.setCurrentText(emotions[0])
                 else:
                     self.emotionComboBox.setCurrentText(DEFAULT_EMOTION)
-                    
-                if len(emotions) >= 2:
-                    if emotions[1] in MANUAL_EMOTION_OPTIONS:
-                        self.emotionComboBox2.setCurrentText(emotions[1])
-                    else:
-                        self.emotionComboBox2.setCurrentText("선택안함")
+            else:
+                self.emotionComboBox.setCurrentText(DEFAULT_EMOTION)
+                
+            if len(emotions) >= 2:
+                if emotions[1] in MANUAL_EMOTION_OPTIONS:
+                    self.emotionComboBox2.setCurrentText(emotions[1])
                 else:
                     self.emotionComboBox2.setCurrentText("선택안함")
-                self.contentEdit.setPlainText(row.get("content", ""))
-                self._existing_image_path = ""
-                self._remove_existing_image = False
-                self._clear_canvas(mark_removed=False)
- 
-                image_path = row.get("image_path", "")
-                if image_path and os.path.exists(image_path):
-                    try:
-                        self.drawingCanvas.load_image(image_path)
-                        self._existing_image_path = image_path
-                    except Exception as e:
-                        print(f"이미지 로드 실패: {e}")
- 
-                # 날씨 표시
-                weather = row.get("weather", "⛅")
-                score = int(row.get("score", 0))
-                tier = score_to_tier(score)
-                self.weatherLabel.setText(weather)
-                self.scoreLabel.setText(f"감정 상태: {emotion_label} ({score}점, 티어: {tier})")
-                self.hideCheckBox.setChecked(is_hidden)
- 
-                self.deleteButton.setEnabled(True)
-                self._set_status_message(
-                    f"📖 {row['date']} — {row.get('title', '')}"
-                )
-                break
+            else:
+                self.emotionComboBox2.setCurrentText("선택안함")
+            self.contentEdit.setPlainText(diary.content)
+            self._existing_image_path = ""
+            self._remove_existing_image = False
+            self._clear_canvas(mark_removed=False)
+
+            image_path = diary.image_path
+            if image_path and os.path.exists(image_path):
+                try:
+                    self.drawingCanvas.load_image(image_path)
+                    self._existing_image_path = image_path
+                except Exception as e:
+                    print(f"이미지 로드 실패: {e}")
+
+            # 날씨 표시
+            weather = diary.weather.emoji
+            score = int(diary.emotion_score.value)
+            tier = diary.emotion_score.tier
+            self.weatherLabel.setText(weather)
+            self.scoreLabel.setText(f"감정 상태: {emotion_label} ({score}점, 티어: {tier})")
+            self.hideCheckBox.setChecked(diary.is_hidden)
+
+            self.deleteButton.setEnabled(True)
+            self._set_status_message(
+                f"📖 {diary.date} — {diary.title or ''}"
+            )
 
     # ── UI 업데이트 ────────────────────────────────────────────
 
@@ -628,20 +594,18 @@ class AppGUI(QMainWindow):
     def _load_diary_list(self):
         """CSV에서 일기 목록을 읽어 왼쪽 리스트에 표시한다."""
         self.diaryListWidget.clear()
-        all_data = self._file_manager.read_all_csv()
-
-        # 최신순 정렬
-        all_data.sort(key=lambda x: x.get("date", ""), reverse=True)
         filter_value = self.filterComboBox.currentText() if hasattr(self, "filterComboBox") else "전체보기"
 
-        for row in all_data:
-            date_str = row.get("date", "")
-            title = row.get("title", "제목 없음")
-            weather = row.get("actual_weather") or row.get("weather", "")
-            diary_id = int(row.get("id", 0))
-            is_hidden = row.get("is_hidden", "False") == "True"
-            if not matches_filter(row, filter_value):
-                continue
+        diaries = self._diary_service.get_all_diaries(filter_value=filter_value)
+        # 최신순 정렬
+        diaries.sort(key=lambda x: x.date, reverse=True)
+
+        for diary in diaries:
+            date_str = diary.date
+            title = diary.title or "제목 없음"
+            weather = diary.weather.actual_weather or diary.weather.emoji
+            diary_id = diary.id
+            is_hidden = diary.is_hidden
 
             if is_hidden:
                 display_text = f"🔒 숨겨진 일기 ({date_str})"
@@ -674,6 +638,9 @@ class AppGUI(QMainWindow):
 
     def show_ai_empathy_window(self):
         """AI의 일기 요약 및 따뜻한 공감 멘트를 표시하는 창을 연다."""
+        import threading
+        from PyQt5.QtCore import QTimer
+
         content = self.contentEdit.toPlainText().strip()
         if not content:
             self.display_alert("공감할 일기 내용이 없습니다. 내용을 먼저 입력해주세요!")
@@ -775,10 +742,6 @@ class AppGUI(QMainWindow):
         ok_button.clicked.connect(dialog.accept)
         main_layout.addWidget(ok_button, 0, Qt.AlignCenter)
 
-        # 다이얼로그를 먼저 띄워 로딩 상태를 보여줌
-        dialog.show()
-        QApplication.processEvents()
-
         # 그림 Base64 데이터 추출
         image_base64 = ""
         if self._has_drawn_content():
@@ -805,7 +768,7 @@ class AppGUI(QMainWindow):
 
         date_str = self.dateEdit.date().toString("yyyy-MM-dd")
         location = self.locationLineEdit.text().strip()
-        
+
         # 날씨 1, 2 결합
         w1 = self.actualWeatherComboBox.currentText().strip()
         w2 = self.actualWeatherComboBox2.currentText().strip()
@@ -816,44 +779,62 @@ class AppGUI(QMainWindow):
         e2 = self.emotionComboBox2.currentText().strip()
         emotion = f"{e1}, {e2}" if e2 and e2 != "선택안함" else e1
 
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            result = self._ai_helper.analyze_diary(
-                date=date_str,
-                content=content,
-                location=location,
-                weather=weather,
-                emotion=emotion,
-                image_base64=image_base64
-            )
+        # 스레드 완료 콜백 — 메인 스레드에서 실행되어야 함
+        _result_holder = {}
 
-            # 로딩 상태 숨기기
-            status_label.setVisible(False)
+        def _update_ui():
+            """QTimer 콜백: 메인(GUI) 스레드에서 결과 렌더링."""
+            if not dialog.isVisible():
+                return
+            if "error" in _result_holder:
+                import traceback
+                traceback.print_exc()
+                status_label.setText(f"❌ AI 분석에 실패했습니다:\n\n{str(_result_holder['error'])}")
+                status_label.setStyleSheet("color: #f38ba8; font-size: 13px; line-height: 1.5;")
+                ok_button.setEnabled(True)
+            else:
+                result = _result_holder["result"]
+                # 로딩 상태 숨기기
+                status_label.setVisible(False)
 
-            # 결과 데이터 바인딩 및 표시
-            summary_text.setText(result["summary"])
-            summary_text.setVisible(True)
-            summary_title.setVisible(True)
+                # 결과 데이터 바인딩 및 표시
+                summary_text.setText(result["summary"])
+                summary_text.setVisible(True)
+                summary_title.setVisible(True)
 
-            empathy_text.setText(result["empathy"])
-            empathy_text.setVisible(True)
-            empathy_title.setVisible(True)
+                empathy_text.setText(result["empathy"])
+                empathy_text.setVisible(True)
+                empathy_title.setVisible(True)
 
-            drawing_text.setText(result["drawing_analysis"])
-            drawing_text.setVisible(True)
-            drawing_title.setVisible(True)
+                drawing_text.setText(result["drawing_analysis"])
+                drawing_text.setVisible(True)
+                drawing_title.setVisible(True)
 
-            ok_button.setEnabled(True)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            status_label.setText(f"❌ AI 분석에 실패했습니다:\n\n{str(e)}")
-            status_label.setStyleSheet("color: #f38ba8; font-size: 13px; line-height: 1.5;")
-            ok_button.setEnabled(True)
-        finally:
-            QApplication.restoreOverrideCursor()
+                ok_button.setEnabled(True)
+
+        def _worker():
+            """백그라운드 스레드: 블로킹 네트워크 요청 실행."""
+            try:
+                result = self._diary_service.analyze_ai(
+                    date=date_str,
+                    content=content,
+                    location=location,
+                    weather=weather,
+                    emotion=emotion,
+                    image_base64=image_base64
+                )
+                _result_holder["result"] = result
+            except Exception as exc:
+                _result_holder["error"] = exc
+            # 메인 스레드에서 UI 갱신 (QTimer.singleShot은 스레드-세이프)
+            QTimer.singleShot(0, _update_ui)
+
+        # 백그라운드 스레드로 AI 분석 실행 (GUI 이벤트 루프 비차단)
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
 
         dialog.exec_()
+
 
     def show_mindmap_window(self):
         """키워드 분석(마인드맵) 팝업 창을 띄운다."""
@@ -878,7 +859,7 @@ class AppGUI(QMainWindow):
         end = dialog.endDateEdit.date().toString("yyyy-MM-dd")
 
         # 기간 내 일기 데이터 읽기
-        entries = self._file_manager.read_by_date_range(start, end)
+        entries = self._diary_service.get_diaries_by_date_range(start, end)
 
         if not entries:
             dialog.wordcloudLabel.setText("해당 기간에 작성된 일기가 없습니다.")
@@ -886,8 +867,7 @@ class AppGUI(QMainWindow):
             return
 
         # 모든 일기 내용 병합 후 전처리
-        all_content = " ".join(row.get("content", "") for row in entries)
-        words = self._text_processor.process(all_content)
+        words = self._diary_service.get_word_list_from_diaries(entries)
 
         if not words:
             dialog.wordcloudLabel.setText("분석할 키워드가 없습니다.")
@@ -895,7 +875,7 @@ class AppGUI(QMainWindow):
             return
 
         # 키워드 순위
-        top_keywords = self._keyword_analyzer.get_top_keywords(words, top_n=10)
+        top_keywords, wc_bytes = self._diary_service.analyze_keywords(entries)
 
         # 테이블 업데이트
         dialog.keywordTable.setRowCount(len(top_keywords))
@@ -917,7 +897,6 @@ class AppGUI(QMainWindow):
 
         # 워드클라우드 생성 및 표시
         try:
-            wc_bytes = self._keyword_analyzer.generate_wordcloud_bytes(words)
             if wc_bytes:
                 pixmap = QPixmap()
                 pixmap.loadFromData(wc_bytes)

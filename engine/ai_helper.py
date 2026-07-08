@@ -12,7 +12,7 @@ class AIHelper:
     def __init__(self):
         # 환경 변수에서 API 키 로드
         self.api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-        self.model = "gemini-3.5-flash"
+        self.model = "gemini-2.5-flash"
         self.endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent"
 
     def analyze_diary(self, date: str, content: str, location: str = "", weather: str = "", emotion: str = "", image_base64: str = "") -> dict:

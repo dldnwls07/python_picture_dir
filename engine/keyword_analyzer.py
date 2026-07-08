@@ -8,9 +8,8 @@ from collections import Counter
 from io import BytesIO
 
 from wordcloud import WordCloud
-import matplotlib
-matplotlib.use("Agg")  # GUI 없는 백엔드
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 
 class KeywordAnalyzer:
@@ -88,16 +87,17 @@ class KeywordAnalyzer:
         wc = WordCloud(**wc_kwargs)
         wc.generate_from_frequencies(word_freq)
 
-        # matplotlib으로 렌더링 후 PNG 바이트 추출
-        fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
+        # pyplot 전역 상태 없이 순수 Figure 객체를 생성하여 자원 누수를 예방
+        fig = Figure(figsize=(width / 100, height / 100), dpi=100)
+        FigureCanvasAgg(fig)  # 캔버스 연결 (렌더링에 필요)
+        ax = fig.add_subplot(111)
         ax.imshow(wc, interpolation="bilinear")
         ax.axis("off")
         fig.patch.set_facecolor("#1e1e2e")
-        plt.tight_layout(pad=0)
+        fig.tight_layout(pad=0)
 
         buf = BytesIO()
         fig.savefig(buf, format="png", facecolor="#1e1e2e",
                     bbox_inches="tight", pad_inches=0.1)
-        plt.close(fig)
         buf.seek(0)
         return buf.read()

@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
+from urllib.parse import unquote
 
 import requests
 
@@ -30,7 +31,7 @@ class WeatherEngine:
             "KMA_WEATHER_URL",
             "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtFcst",
         ).strip()
-        self.kma_service_key = os.environ.get("KMA_SERVICE_KEY", "").strip()
+        self.kma_service_key = unquote(os.environ.get("KMA_SERVICE_KEY", "").strip())
         self.provider = os.environ.get("WEATHER_PROVIDER", "auto").strip().lower()
         self.manual_latitude = os.environ.get("WEATHER_LATITUDE", "").strip()
         self.manual_longitude = os.environ.get("WEATHER_LONGITUDE", "").strip()
