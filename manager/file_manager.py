@@ -105,7 +105,9 @@ class FileManager:
     def _normalize_row(self, row: dict) -> dict:
         """확장된 CSV 스키마 기준으로 누락 필드를 빈 값으로 보정한다."""
         normalized = {header: "" for header in self.HEADERS}
-        normalized.update(row)
+        for k, v in row.items():
+            if k in normalized:
+                normalized[k] = v
         return normalized
 
     def save_diary_image(self, image, filename: Optional[str] = None) -> str:
