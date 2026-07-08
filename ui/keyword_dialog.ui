@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>KeywordDialog</class>
+ <widget class="QDialog" name="KeywordDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>700</width>
+    <height>600</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>☁️ 키워드 분석 — WordCloud</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">
+    QDialog {
+      background-color: #1e1e2e;
+    }
+    QWidget {
+      color: #cdd6f4;
+      font-family: "Apple SD Gothic Neo", "-apple-system", sans-serif;
+      font-size: 13px;
+    }
+    QLabel#dialogTitle {
+      color: #89b4fa;
+      font-size: 18px;
+      font-weight: bold;
+      padding: 4px;
+    }
+    QDateEdit {
+      background-color: #313244;
+      border: 1px solid #45475a;
+      border-radius: 6px;
+      padding: 6px 10px;
+      color: #cdd6f4;
+    }
+    QDateEdit::drop-down {
+      subcontrol-origin: padding;
+      subcontrol-position: right center;
+      width: 20px;
+      border-left: 1px solid #45475a;
+    }
+    QPushButton#analyzeButton {
+      background-color: #a6e3a1;
+      color: #1e1e2e;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 20px;
+      font-weight: bold;
+    }
+    QPushButton#analyzeButton:hover {
+      background-color: #94e2d5;
+    }
+    QLabel#wordcloudLabel {
+      background-color: #1e1e2e;
+      border: 1px solid #313244;
+      border-radius: 8px;
+      padding: 4px;
+    }
+    QTableWidget {
+      background-color: #181825;
+      border: 1px solid #313244;
+      border-radius: 8px;
+      gridline-color: #313244;
+      color: #cdd6f4;
+      font-size: 13px;
+    }
+    QTableWidget::item {
+      padding: 6px 12px;
+    }
+    QTableWidget::item:selected {
+      background-color: #313244;
+    }
+    QHeaderView::section {
+      background-color: #181825;
+      color: #89b4fa;
+      border: none;
+      border-bottom: 2px solid #313244;
+      padding: 8px 12px;
+      font-weight: bold;
+      font-size: 13px;
+    }
+    QLabel#infoLabel {
+      color: #6c7086;
+      font-size: 11px;
+    }
+   </string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <property name="spacing">
+    <number>12</number>
+   </property>
+   <property name="leftMargin">
+    <number>20</number>
+   </property>
+   <property name="topMargin">
+    <number>16</number>
+   </property>
+   <property name="rightMargin">
+    <number>20</number>
+   </property>
+   <property name="bottomMargin">
+    <number>16</number>
+   </property>
+   <!-- 타이틀 -->
+   <item>
+    <widget class="QLabel" name="dialogTitle">
+     <property name="text">
+      <string>📊 키워드 분석</string>
+     </property>
+    </widget>
+   </item>
+   <!-- 기간 선택 -->
+   <item>
+    <layout class="QHBoxLayout" name="dateRangeLayout">
+     <property name="spacing">
+      <number>8</number>
+     </property>
+     <item>
+      <widget class="QLabel" name="periodLabel">
+       <property name="text">
+        <string>분석 기간:</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QDateEdit" name="startDateEdit">
+       <property name="minimumSize">
+        <size>
+         <width>130</width>
+         <height>34</height>
+        </size>
+       </property>
+       <property name="calendarPopup">
+        <bool>true</bool>
+       </property>
+       <property name="displayFormat">
+        <string>yyyy-MM-dd</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="tildeLabel">
+       <property name="text">
+        <string> ~ </string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QDateEdit" name="endDateEdit">
+       <property name="minimumSize">
+        <size>
+         <width>130</width>
+         <height>34</height>
+        </size>
+       </property>
+       <property name="calendarPopup">
+        <bool>true</bool>
+       </property>
+       <property name="displayFormat">
+        <string>yyyy-MM-dd</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="analyzeButton">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>34</height>
+        </size>
+       </property>
+       <property name="text">
+        <string>🔍 분석하기</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="dateRangeSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <!-- 워드클라우드 이미지 -->
+   <item>
+    <widget class="QLabel" name="wordcloudLabel">
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>280</height>
+      </size>
+     </property>
+     <property name="text">
+      <string>기간을 선택하고 '분석하기'를 눌러주세요</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignCenter</set>
+     </property>
+    </widget>
+   </item>
+   <!-- 키워드 순위 테이블 -->
+   <item>
+    <widget class="QTableWidget" name="keywordTable">
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>180</height>
+      </size>
+     </property>
+     <property name="columnCount">
+      <number>3</number>
+     </property>
+     <property name="showGrid">
+      <bool>true</bool>
+     </property>
+     <property name="alternatingRowColors">
+      <bool>true</bool>
+     </property>
+     <attribute name="horizontalHeaderVisible">
+      <bool>true</bool>
+     </attribute>
+     <attribute name="verticalHeaderVisible">
+      <bool>false</bool>
+     </attribute>
+     <column>
+      <property name="text">
+       <string>순위</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>키워드</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>빈도수</string>
+      </property>
+     </column>
+    </widget>
+   </item>
+   <!-- 하단 안내 -->
+   <item>
+    <widget class="QLabel" name="infoLabel">
+     <property name="text">
+      <string>💡 일기를 더 많이 쓸수록 분석이 정확해집니다.</string>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

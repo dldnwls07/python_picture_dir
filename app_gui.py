@@ -1,0 +1,600 @@
+"""
+AppGUI — 메인 GUI 클래스
+Qt Designer .ui 파일을 로드하고, 사용자 이벤트를 처리한다.
+"""
+
+import os
+import sys
+from PyQt5.QtWidgets import (
+    QMainWindow, QDialog, QMessageBox, QListWidgetItem,
+    QLabel, QComboBox, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
+    QPushButton,
+    QTableWidgetItem, QHeaderView,
+)
+from PyQt5.QtCore import QDate, Qt
+from PyQt5.QtGui import QPixmap, QColor, QPainter, QPen, QImage
+from PyQt5 import uic
+
+# 프로젝트 루트를 sys.path에 추가
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from runtime_env import configure_runtime
+
+configure_runtime(PROJECT_ROOT)
+
+from engine.keyword_analyzer import KeywordAnalyzer
+from engine.text_processor import TextProcessor
+from diary_categories import (
+    ALL_FILTER_OPTIONS,
+    DEFAULT_EMOTION,
+    EMOTION_LABEL_TO_SCORE,
+    EMOTION_LABEL_TO_WEATHER,
+    MANUAL_EMOTION_OPTIONS,
+    MANUAL_WEATHER_OPTIONS,
+    matches_filter,
+)
+from manager.file_manager import FileManager
+
+# .ui 파일 경로
+UI_DIR = os.path.join(PROJECT_ROOT, "ui")
+MAIN_UI = os.path.join(UI_DIR, "main_window.ui")
+KEYWORD_UI = os.path.join(UI_DIR, "keyword_dialog.ui")
+
+
+class DrawingCanvas(QWidget):
+    """PyQt 기반 그림 일기 캔버스."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(480, 320)
+        self.setAutoFillBackground(True)
+        self.setStyleSheet("background-color: white; border: 1px solid #45475a; border-radius: 8px;")
+        self._image = QImage(self.size(), QImage.Format_RGB32)
+        self._image.fill(Qt.white)
+        self._last_point = None
+        self._pen_color = QColor("black")
+        self._dirty = False
+        self._has_content = False
+
+    def resizeEvent(self, event):
+        if self.width() <= 0 or self.height() <= 0:
+            return
+        if self._image.size() == self.size():
+            return
+
+        new_image = QImage(self.size(), QImage.Format_RGB32)
+        new_image.fill(Qt.white)
+        painter = QPainter(new_image)
+        painter.drawImage(0, 0, self._image)
+        painter.end()
+        self._image = new_image
+        super().resizeEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.drawImage(self.rect(), self._image)
+        painter.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._last_point = event.pos()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.LeftButton and self._last_point is not None:
+            painter = QPainter(self._image)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(QPen(self._pen_color, 4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.drawLine(self._last_point, event.pos())
+            painter.end()
+            self._last_point = event.pos()
+            self._dirty = True
+            self._has_content = True
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._last_point = None
+
+    def set_pen_color(self, color_name: str):
+        self._pen_color = QColor(color_name)
+
+    def clear(self):
+        self._image.fill(Qt.white)
+        self._dirty = False
+        self._has_content = False
+        self._last_point = None
+        self.update()
+
+    def load_image(self, image_path: str):
+        image = QImage(image_path)
+        if image.isNull():
+            raise ValueError("이미지를 불러오지 못했습니다.")
+        scaled = image.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._image.fill(Qt.white)
+        painter = QPainter(self._image)
+        x = max((self.width() - scaled.width()) // 2, 0)
+        y = max((self.height() - scaled.height()) // 2, 0)
+        painter.drawImage(x, y, scaled)
+        painter.end()
+        self._dirty = False
+        self._has_content = True
+        self.update()
+
+    def export_image(self) -> QImage:
+        return self._image.copy()
+
+    def has_image_content(self) -> bool:
+        return self._has_content or self._dirty
+
+    def is_modified(self) -> bool:
+        return self._dirty
+
+
+class AppGUI(QMainWindow):
+    """감정 일기장 메인 윈도우 클래스."""
+
+    def __init__(self, start_weather_thread: bool = False):
+        super().__init__()
+
+        # .ui 파일 로드
+        uic.loadUi(MAIN_UI, self)
+
+        # 엔진 및 매니저 초기화
+        self._keyword_analyzer = KeywordAnalyzer()
+        self._text_processor = TextProcessor()
+        self._file_manager = FileManager()
+
+        # 현재 선택된 일기 ID (수정 모드용)
+        self._current_diary_id = None
+        self._existing_image_path = ""
+        self._remove_existing_image = False
+        # UI 초기화
+        self._init_ui()
+        self._connect_events()
+        self._load_diary_list()
+
+    def _init_ui(self):
+        """메인 화면 초기 설정."""
+        # 오늘 날짜 설정
+        self.dateEdit.setDate(QDate.currentDate())
+
+        # 상태바 초기 메시지
+        self._set_status_message("환영합니다! 오늘의 일기를 작성해 보세요. 📝")
+
+        # 삭제 버튼 초기 비활성화
+        self.deleteButton.setEnabled(False)
+
+        # Tk 버전과 동일한 필터 UI를 왼쪽 목록 상단에 추가한다.
+        filter_label = QLabel("  필터")
+        self.filterComboBox = QComboBox()
+        self.filterComboBox.addItems(ALL_FILTER_OPTIONS)
+        self.leftLayout.insertWidget(1, filter_label)
+        self.leftLayout.insertWidget(2, self.filterComboBox)
+
+        # 위치 / 현재 날씨 / 오늘 감정 입력
+        self.locationLineEdit = QLineEdit()
+        self.locationLineEdit.setPlaceholderText("위치를 입력하세요")
+        self.actualWeatherComboBox = QComboBox()
+        self.actualWeatherComboBox.addItems(MANUAL_WEATHER_OPTIONS)
+        self.emotionComboBox = QComboBox()
+        self.emotionComboBox.addItems(MANUAL_EMOTION_OPTIONS)
+        context_row = QHBoxLayout()
+        context_row.addWidget(QLabel("위치"))
+        context_row.addWidget(self.locationLineEdit, 2)
+        context_row.addWidget(QLabel("현재 날씨"))
+        context_row.addWidget(self.actualWeatherComboBox, 1)
+        context_row.addWidget(QLabel("오늘 감정"))
+        context_row.addWidget(self.emotionComboBox, 1)
+        self.rightLayout.insertLayout(1, context_row)
+
+        # 1. headerLayout에서 titleEdit 분리 (제목을 그림판 아래로 이동)
+        self.headerLayout.removeWidget(self.titleEdit)
+        
+        # 2. 그림판 영역 구성
+        draw_layout = QVBoxLayout()
+        draw_layout.setContentsMargins(0, 0, 0, 0)
+        draw_controls = QHBoxLayout()
+        draw_controls.addWidget(QLabel("🎨 펜 색상"))
+        self.colorComboBox = QComboBox()
+        self.colorComboBox.addItems(["black", "red", "blue", "green", "yellow", "white"])
+        draw_controls.addWidget(self.colorComboBox)
+        draw_controls.addStretch(1)
+        self.clearCanvasButton = QPushButton("지우기")
+        draw_controls.addWidget(self.clearCanvasButton)
+        draw_layout.addLayout(draw_controls)
+        
+        self.drawingCanvas = DrawingCanvas()
+        draw_layout.addWidget(self.drawingCanvas)
+
+        # 3. 텍스트 입력 영역 (제목 + 내용)
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        
+        title_row = QHBoxLayout()
+        title_label = QLabel("제목:")
+        title_label.setStyleSheet("font-weight: bold; color: #89b4fa; font-size: 14px;")
+        title_row.addWidget(title_label)
+        title_row.addWidget(self.titleEdit)
+        
+        text_layout.addLayout(title_row)
+        
+        # 원래 레이아웃에서 contentEdit를 떼어내어 text_layout에 추가
+        index = self.rightLayout.indexOf(self.contentEdit)
+        if index != -1:
+            self.rightLayout.takeAt(index)
+        text_layout.addWidget(self.contentEdit)
+        
+        # 4. 오른쪽 패널 수직 레이아웃(rightLayout) 재배치
+        if index != -1:
+            self.rightLayout.insertLayout(index, draw_layout)
+            self.rightLayout.insertLayout(index + 1, text_layout)
+        else:
+            self.rightLayout.addLayout(draw_layout)
+            self.rightLayout.addLayout(text_layout)
+            
+        # 비율(Stretch) 설정: 캔버스 3, 텍스트 2
+        self.rightLayout.setStretchFactor(draw_layout, 3)
+        self.rightLayout.setStretchFactor(text_layout, 2)
+
+        # QComboBox 스타일을 다크 모드에 맞게 전역 추가 (QTabWidget 스타일 제거)
+        extra_style = """
+        QComboBox {
+            background-color: #313244;
+            border: 1px solid #45475a;
+            border-radius: 6px;
+            padding: 6px 10px;
+            color: #cdd6f4;
+            font-size: 13px;
+        }
+        QComboBox::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 20px;
+            border-left: 1px solid #45475a;
+        }
+        QComboBox QAbstractItemView {
+            background-color: #313244;
+            color: #cdd6f4;
+            selection-background-color: #89b4fa;
+            selection-color: #1e1e2e;
+        }
+        QTextEdit {
+            background-color: #313244;
+            border: 1px solid #45475a;
+            border-radius: 8px;
+            padding: 12px;
+            color: #cdd6f4;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        QTextEdit:focus {
+            border: 1px solid #89b4fa;
+        }
+        """
+        self.setStyleSheet(self.styleSheet() + extra_style)
+
+    def _connect_events(self):
+        """버튼 클릭 등 이벤트 핸들러를 연결한다."""
+        self.saveButton.clicked.connect(self.on_save_clicked)
+        self.deleteButton.clicked.connect(self._on_delete_clicked)
+        self.mindmapButton.clicked.connect(self.show_mindmap_window)
+        self.newButton.clicked.connect(self._on_new_clicked)
+        self.diaryListWidget.currentItemChanged.connect(self._on_diary_selected)
+        self.filterComboBox.currentTextChanged.connect(self._load_diary_list)
+        self.colorComboBox.currentTextChanged.connect(self.drawingCanvas.set_pen_color)
+        self.clearCanvasButton.clicked.connect(self._clear_canvas)
+
+    # ── 이벤트 핸들러 ────────────────────────────────────────────
+
+    def on_save_clicked(self):
+        """'저장' 버튼 클릭: 사용자 입력 메타데이터와 일기를 저장한다."""
+        date_str = self.dateEdit.date().toString("yyyy-MM-dd")
+        title = self.titleEdit.text().strip()
+        content = self.contentEdit.toPlainText().strip()
+        location_name = self.locationLineEdit.text().strip()
+        actual_weather_value = self.actualWeatherComboBox.currentText().strip()
+        emotion_label = self.emotionComboBox.currentText().strip()
+
+        # 입력 검증
+        if not content and not self._has_drawn_content():
+            self.display_alert("일기 내용이나 그림을 입력해 주세요.")
+            return
+        if not title:
+            title = f"{date_str} 일기"
+
+        score = EMOTION_LABEL_TO_SCORE.get(emotion_label, 0)
+        weather_emoji, weather_text = EMOTION_LABEL_TO_WEATHER.get(emotion_label, ("⛅", "보통"))
+        actual_weather_emoji = actual_weather_value.split(" ")[0] if actual_weather_value else ""
+        actual_weather_text = actual_weather_value.split(" ", 1)[1] if " " in actual_weather_value else actual_weather_value
+        result = {
+            "score": score,
+            "weather_emoji": weather_emoji,
+            "weather_text": weather_text,
+            "emotion_label": emotion_label,
+            "actual_weather": actual_weather_emoji,
+            "actual_weather_text": actual_weather_text,
+            "location_name": location_name,
+        }
+
+        image_path = ""
+        remove_existing_image = False
+        if self.drawingCanvas.is_modified():
+            image_path = self._file_manager.save_diary_image(self.drawingCanvas.export_image())
+            remove_existing_image = bool(self._existing_image_path)
+        elif self._current_diary_id is not None and self._remove_existing_image:
+            remove_existing_image = True
+
+        data_dict = {
+            "date": date_str,
+            "title": title,
+            "content": content,
+            "score": score,
+            "emotion_label": emotion_label,
+            "weather": weather_emoji,
+            "actual_weather": actual_weather_emoji,
+            "actual_weather_text": actual_weather_text,
+            "weather_source": "manual",
+            "location_name": location_name,
+            "remove_image": remove_existing_image,
+        }
+        if image_path:
+            data_dict["image_path"] = image_path
+        elif remove_existing_image:
+            data_dict["image_path"] = ""
+
+        # 저장 or 수정
+        if self._current_diary_id is not None:
+            success = self._file_manager.update_by_id(self._current_diary_id, data_dict)
+            action = "수정"
+        else:
+            success = self._file_manager.append_to_csv(data_dict)
+            action = "저장"
+
+        if success:
+            if image_path:
+                self._existing_image_path = image_path
+                self._remove_existing_image = False
+            elif remove_existing_image:
+                self._existing_image_path = ""
+                self._remove_existing_image = False
+            self.update_weather_icon(result)
+            self._load_diary_list()
+            self._set_status_message(
+                f"✅ 일기가 {action}되었습니다! 감정: {emotion_label} | 현재 날씨: {actual_weather_value}"
+            )
+        else:
+            self.display_alert(f"일기 {action}에 실패했습니다.")
+
+    def _on_delete_clicked(self):
+        """'삭제' 버튼 클릭: 선택된 일기를 삭제한다."""
+        if self._current_diary_id is None:
+            self.display_alert("삭제할 일기를 선택해 주세요.")
+            return
+
+        reply = QMessageBox.question(
+            self, "삭제 확인",
+            "정말 이 일기를 삭제하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            success = self._file_manager.delete_by_id(self._current_diary_id)
+            if success:
+                self._on_new_clicked()
+                self._load_diary_list()
+                self._set_status_message("🗑️ 일기가 삭제되었습니다.")
+            else:
+                self.display_alert("삭제에 실패했습니다.")
+
+    def _on_new_clicked(self):
+        """'새 일기' 버튼 클릭: 입력 필드를 초기화한다."""
+        self._current_diary_id = None
+        self.dateEdit.setDate(QDate.currentDate())
+        self.titleEdit.clear()
+        self.locationLineEdit.clear()
+        self.actualWeatherComboBox.setCurrentText(MANUAL_WEATHER_OPTIONS[1])
+        self.emotionComboBox.setCurrentText(DEFAULT_EMOTION)
+        self.contentEdit.clear()
+        self._existing_image_path = ""
+        self._remove_existing_image = False
+        self._clear_canvas(mark_removed=False)
+        self.weatherLabel.setText("⛅")
+        self.scoreLabel.setText(f"감정 상태: {DEFAULT_EMOTION} (0점)")
+        self.deleteButton.setEnabled(False)
+        self.diaryListWidget.clearSelection()
+        self._set_status_message("새 일기를 작성해 보세요. ✍️")
+
+    def _on_diary_selected(self, current: QListWidgetItem, previous):
+        """일기 목록에서 항목 선택 시 내용을 표시한다."""
+        if current is None:
+            return
+
+        diary_id = current.data(Qt.UserRole)
+        if diary_id is None:
+            return
+
+        # CSV에서 해당 일기 찾기
+        all_data = self._file_manager.read_all_csv()
+        for row in all_data:
+            if int(row.get("id", 0)) == diary_id:
+                self._current_diary_id = diary_id
+                self.dateEdit.setDate(QDate.fromString(row["date"], "yyyy-MM-dd"))
+                self.titleEdit.setText(row.get("title", ""))
+                self.locationLineEdit.setText(row.get("location_name", ""))
+                actual_weather_label = f"{row.get('actual_weather', '')} {row.get('actual_weather_text', '')}".strip()
+                if actual_weather_label in MANUAL_WEATHER_OPTIONS:
+                    self.actualWeatherComboBox.setCurrentText(actual_weather_label)
+                else:
+                    self.actualWeatherComboBox.setCurrentText(MANUAL_WEATHER_OPTIONS[1])
+                emotion_label = row.get("emotion_label", DEFAULT_EMOTION) or DEFAULT_EMOTION
+                if emotion_label in MANUAL_EMOTION_OPTIONS:
+                    self.emotionComboBox.setCurrentText(emotion_label)
+                else:
+                    self.emotionComboBox.setCurrentText(DEFAULT_EMOTION)
+                self.contentEdit.setPlainText(row.get("content", ""))
+                self._existing_image_path = ""
+                self._remove_existing_image = False
+                self._clear_canvas(mark_removed=False)
+
+                image_path = row.get("image_path", "")
+                if image_path and os.path.exists(image_path):
+                    try:
+                        self.drawingCanvas.load_image(image_path)
+                        self._existing_image_path = image_path
+                    except Exception as e:
+                        print(f"이미지 로드 실패: {e}")
+
+                # 날씨 표시
+                weather = row.get("weather", "⛅")
+                score = int(row.get("score", 0))
+                self.weatherLabel.setText(weather)
+                self.scoreLabel.setText(f"감정 상태: {emotion_label} ({score}점)")
+
+                self.deleteButton.setEnabled(True)
+                self._set_status_message(
+                    f"📖 {row['date']} — {row.get('title', '')}"
+                )
+                break
+
+    # ── UI 업데이트 ────────────────────────────────────────────
+
+    def update_weather_icon(self, result: dict):
+        """사용자 선택 감정 상태에 따라 아이콘과 요약을 갱신한다."""
+        self.weatherLabel.setText(result["weather_emoji"])
+        self.scoreLabel.setText(f"감정 상태: {result['emotion_label']} ({result['score']}점)")
+
+    def _load_diary_list(self):
+        """CSV에서 일기 목록을 읽어 왼쪽 리스트에 표시한다."""
+        self.diaryListWidget.clear()
+        all_data = self._file_manager.read_all_csv()
+
+        # 최신순 정렬
+        all_data.sort(key=lambda x: x.get("date", ""), reverse=True)
+        filter_value = self.filterComboBox.currentText() if hasattr(self, "filterComboBox") else "전체보기"
+
+        for row in all_data:
+            date_str = row.get("date", "")
+            title = row.get("title", "제목 없음")
+            weather = row.get("actual_weather") or row.get("weather", "")
+            diary_id = int(row.get("id", 0))
+            if not matches_filter(row, filter_value):
+                continue
+
+            display_text = f"{weather} {date_str}\n     {title}"
+            item = QListWidgetItem(display_text)
+            item.setData(Qt.UserRole, diary_id)
+            self.diaryListWidget.addItem(item)
+
+        if self.diaryListWidget.count() == 0 and filter_value != "전체보기":
+            self._set_status_message(
+                f"선택한 필터 '{filter_value}'에 해당하는 일기가 없습니다."
+            )
+        elif filter_value == "전체보기":
+            self._set_status_message("환영합니다! 오늘의 일기를 작성해 보세요. 📝")
+
+    def _set_status_message(self, base_message: str):
+        """기본 상태 메시지를 표시한다."""
+        self.statusbar.showMessage(base_message)
+
+    def _clear_canvas(self, mark_removed: bool = True):
+        """그림 캔버스를 초기화한다."""
+        if mark_removed and self._existing_image_path:
+            self._remove_existing_image = True
+        self.drawingCanvas.clear()
+
+    def _has_drawn_content(self) -> bool:
+        """현재 그림 일기 내용이 존재하는지 반환한다."""
+        return self.drawingCanvas.has_image_content() or bool(self._existing_image_path)
+
+    def show_mindmap_window(self):
+        """키워드 분석(마인드맵) 팝업 창을 띄운다."""
+        dialog = QDialog(self)
+        uic.loadUi(KEYWORD_UI, dialog)
+
+        # 기본 기간: 최근 7일
+        today = QDate.currentDate()
+        dialog.startDateEdit.setDate(today.addDays(-7))
+        dialog.endDateEdit.setDate(today)
+
+        # 분석 버튼 이벤트
+        dialog.analyzeButton.clicked.connect(
+            lambda: self._run_keyword_analysis(dialog)
+        )
+
+        dialog.exec_()
+
+    def _run_keyword_analysis(self, dialog: QDialog):
+        """키워드 분석을 실행하고 결과를 다이얼로그에 표시한다."""
+        start = dialog.startDateEdit.date().toString("yyyy-MM-dd")
+        end = dialog.endDateEdit.date().toString("yyyy-MM-dd")
+
+        # 기간 내 일기 데이터 읽기
+        entries = self._file_manager.read_by_date_range(start, end)
+
+        if not entries:
+            dialog.wordcloudLabel.setText("해당 기간에 작성된 일기가 없습니다.")
+            dialog.keywordTable.setRowCount(0)
+            return
+
+        # 모든 일기 내용 병합 후 전처리
+        all_content = " ".join(row.get("content", "") for row in entries)
+        words = self._text_processor.process(all_content)
+
+        if not words:
+            dialog.wordcloudLabel.setText("분석할 키워드가 없습니다.")
+            dialog.keywordTable.setRowCount(0)
+            return
+
+        # 키워드 순위
+        top_keywords = self._keyword_analyzer.get_top_keywords(words, top_n=10)
+
+        # 테이블 업데이트
+        dialog.keywordTable.setRowCount(len(top_keywords))
+        dialog.keywordTable.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch
+        )
+
+        for i, (word, count) in enumerate(top_keywords):
+            rank_item = QTableWidgetItem(str(i + 1))
+            rank_item.setTextAlignment(Qt.AlignCenter)
+            word_item = QTableWidgetItem(word)
+            word_item.setTextAlignment(Qt.AlignCenter)
+            count_item = QTableWidgetItem(str(count))
+            count_item.setTextAlignment(Qt.AlignCenter)
+
+            dialog.keywordTable.setItem(i, 0, rank_item)
+            dialog.keywordTable.setItem(i, 1, word_item)
+            dialog.keywordTable.setItem(i, 2, count_item)
+
+        # 워드클라우드 생성 및 표시
+        try:
+            wc_bytes = self._keyword_analyzer.generate_wordcloud_bytes(words)
+            if wc_bytes:
+                pixmap = QPixmap()
+                pixmap.loadFromData(wc_bytes)
+                scaled = pixmap.scaled(
+                    dialog.wordcloudLabel.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+                dialog.wordcloudLabel.setPixmap(scaled)
+            else:
+                dialog.wordcloudLabel.setText("워드클라우드 생성에 실패했습니다.")
+        except Exception as e:
+            dialog.wordcloudLabel.setText(f"워드클라우드 오류: {str(e)}")
+
+        # 정보 라벨 업데이트
+        dialog.infoLabel.setText(
+            f"📊 {start} ~ {end} | 일기 {len(entries)}개 | "
+            f"총 키워드 {len(words)}개"
+        )
+
+    def display_alert(self, msg: str):
+        """안내 사항이나 예외 발생 시 메시지 팝업을 출력한다.
+
+        Args:
+            msg: 표시할 메시지
+        """
+        QMessageBox.information(self, "알림", msg)
