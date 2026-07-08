@@ -12,7 +12,7 @@ class AIHelper:
     def __init__(self):
         # 환경 변수에서 API 키 로드
         self.api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-        self.model = "gemini-2.5-flash"
+        self.model = "gemini-3.5-flash"
         self.endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent"
 
     def analyze_diary(self, date: str, content: str, location: str = "", weather: str = "", emotion: str = "", image_base64: str = "") -> dict:
@@ -53,6 +53,8 @@ class AIHelper:
             "위의 일기 내용과 첨부된 그림(있는 경우)을 친근하고 따뜻한 톤앤매너로 분석해 주세요.\n"
             "1. 일기 본문의 핵심 내용을 1~2문장으로 요약해주고(summary),\n"
             "2. 사용자의 상황과 감정에 공감하며 격려하거나 기쁨을 나누는 위로/조언의 멘트를 3~4문장으로 작성해주세요(empathy).\n"
+            "   특히 오늘의 감정에 '슬펐어요', '피곤했어요', '화났어요', '고독', '집에가고싶어!' 등 부정적인 감정이 포함되어 있다면,\n"
+            "   사용자의 슬픔이나 스트레스를 위로하고 기분 전환을 도울 수 있는 따뜻한 힐링 명언이나 격려의 글귀를 공감 멘트(empathy) 마지막 줄에 꼭 한 줄 추가해 주세요.\n"
             "3. 첨부된 그림 일기를 분석하여 사용자의 심리 상태, 색채 표현, 선의 형태 등을 분석해 주세요(drawing_analysis). "
             "만약 그림이 첨부되지 않았거나 흰 캔버스라면 '그림 일기가 비어있습니다. 다음에는 오늘의 기분을 캔버스에 표현해보세요!' 라는 메시지를 작성해주세요.\n\n"
             "공감 및 그림 분석 멘트는 한국어 반말이나 다정한 높임말(예: '~했군요!', '~해보세요.')을 섞어서 따뜻한 심리 상담가처럼 친근하게 작성해주세요."
@@ -97,25 +99,45 @@ class AIHelper:
             }
         }
 
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=20)
-            response.raise_for_status()
-            res_data = response.json()
-            
-            # 응답 본문 파싱
-            candidates = res_data.get("candidates", [])
-            if not candidates:
-                raise RuntimeError("Gemini API가 빈 응답을 반환했습니다.")
+        models_to_try = [self.model, "gemini-2.5-flash", "gemini-flash-latest"]
+        last_error = None
+
+        for model_name in models_to_try:
+            url = self.endpoint.format(model_name) + f"?key={self.api_key}"
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=20)
+                response.raise_for_status()
+                res_data = response.json()
                 
-            text_response = candidates[0].get("content", {}).get("parts", [])[0].get("text", "{}")
-            result = json.loads(text_response.strip())
-            
-            # 안전하게 포맷 확인
-            if "summary" not in result or "empathy" not in result or "drawing_analysis" not in result:
-                raise KeyError("API 응답 형식이 올바르지 않습니다.")
+                # 응답 본문 파싱
+                candidates = res_data.get("candidates", [])
+                if not candidates:
+                    raise RuntimeError("Gemini API가 빈 응답을 반환했습니다.")
+                    
+                text_response = candidates[0].get("content", {}).get("parts", [])[0].get("text", "{}")
+                result = json.loads(text_response.strip())
                 
-            return result
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"네트워크 오류가 발생했습니다: {str(e)}")
-        except (json.JSONDecodeError, KeyError, IndexError) as e:
-            raise RuntimeError(f"AI 응답 분석 중 오류가 발생했습니다: {str(e)}")
+                # 안전하게 포맷 확인
+                if "summary" not in result or "empathy" not in result or "drawing_analysis" not in result:
+                    raise KeyError("API 응답 형식이 올바르지 않습니다.")
+                    
+                return result
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                print(f"⚠️ 모델 {model_name} 호출 실패: {e}. 다음 모델로 대체를 시도합니다...")
+            except (json.JSONDecodeError, KeyError, IndexError) as e:
+                last_error = e
+                print(f"⚠️ 모델 {model_name} 응답 파싱 실패: {e}. 다음 모델로 대체를 시도합니다...")
+
+        # 모든 모델 시도 실패 시 최종 에러 발생
+        if isinstance(last_error, requests.exceptions.RequestException):
+            # 429 할도 초과 에러 여부 판별
+            if hasattr(last_error, "response") and last_error.response is not None:
+                if last_error.response.status_code == 429:
+                    raise RuntimeError(
+                        "⚠️ API 호출 한도(Rate Limit)를 초과했습니다.\n"
+                        "무료 요금제의 분당 또는 하루 요청량 제한에 도달했으니 잠시 후 다시 시도해 주세요."
+                    )
+            raise RuntimeError(f"네트워크 오류가 발생했습니다: {str(last_error)}")
+        else:
+            raise RuntimeError(f"AI 응답 분석 중 오류가 발생했습니다: {str(last_error)}")

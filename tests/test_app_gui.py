@@ -24,7 +24,7 @@ class AppGuiTest(unittest.TestCase):
     def test_tabs_and_filter_exist(self):
         self.assertIsNotNone(self.window.drawingCanvas)
         self.assertIsNotNone(self.window.contentEdit)
-        self.assertEqual(self.window.filterComboBox.count(), 8)
+        self.assertEqual(self.window.filterComboBox.count(), 10)
 
     def test_save_text_and_drawing_diary(self):
         self.window.titleEdit.setText("qt diary")

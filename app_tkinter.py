@@ -91,7 +91,7 @@ class AppGUI(tk.Tk):
     def __init__(self, start_weather_thread: bool = False):
         super().__init__()
 
-        self.title("마인드웨더 감정 일기장 ☀️⛅🌧️")
+        self.title("내 감정은 오늘도 F등급 ☀️⛅🌧️")
         self.geometry("960x650")
         self.configure(bg=COLOR_BG)
 
@@ -207,18 +207,18 @@ class AppGUI(tk.Tk):
         # 위치 / 현재 날씨 / 오늘 감정
         context_frame = ttk.Frame(editor_card, style="Card.TFrame")
         context_frame.pack(fill="x", pady=(0, 12))
-        for idx in range(3):
+        for idx in range(5):
             context_frame.columnconfigure(idx, weight=1)
 
         ttk.Label(context_frame, text="위치", style="Card.TLabel", font=("Malgun Gothic", 10, "bold")).grid(row=0, column=0, sticky="w", padx=(0, 10))
-        ttk.Label(context_frame, text="현재 날씨", style="Card.TLabel", font=("Malgun Gothic", 10, "bold")).grid(row=0, column=1, sticky="w", padx=(0, 10))
-        ttk.Label(context_frame, text="오늘 감정", style="Card.TLabel", font=("Malgun Gothic", 10, "bold")).grid(row=0, column=2, sticky="w")
+        ttk.Label(context_frame, text="날씨", style="Card.TLabel", font=("Malgun Gothic", 10, "bold")).grid(row=0, column=1, columnspan=2, sticky="w", padx=(0, 10))
+        ttk.Label(context_frame, text="감정", style="Card.TLabel", font=("Malgun Gothic", 10, "bold")).grid(row=0, column=3, columnspan=2, sticky="w")
 
         self.location_var = tk.StringVar()
         self.location_entry = ttk.Entry(context_frame, textvariable=self.location_var, font=("Malgun Gothic", 10))
         self.location_entry.grid(row=1, column=0, sticky="ew", padx=(0, 12), pady=(5, 0))
 
-        self.actual_weather_var = tk.StringVar(value=MANUAL_WEATHER_OPTIONS[1])
+        self.actual_weather_var = tk.StringVar(value=MANUAL_WEATHER_OPTIONS[0])
         self.actual_weather_combo = ttk.Combobox(
             context_frame,
             textvariable=self.actual_weather_var,
@@ -226,7 +226,17 @@ class AppGUI(tk.Tk):
             values=MANUAL_WEATHER_OPTIONS,
             font=("Malgun Gothic", 10),
         )
-        self.actual_weather_combo.grid(row=1, column=1, sticky="ew", padx=(0, 12), pady=(5, 0))
+        self.actual_weather_combo.grid(row=1, column=1, sticky="ew", padx=(0, 6), pady=(5, 0))
+
+        self.actual_weather_var2 = tk.StringVar(value="선택안함")
+        self.actual_weather_combo2 = ttk.Combobox(
+            context_frame,
+            textvariable=self.actual_weather_var2,
+            state="readonly",
+            values=["선택안함"] + list(MANUAL_WEATHER_OPTIONS),
+            font=("Malgun Gothic", 10),
+        )
+        self.actual_weather_combo2.grid(row=1, column=2, sticky="ew", padx=(0, 12), pady=(5, 0))
 
         self.emotion_var = tk.StringVar(value=DEFAULT_EMOTION)
         self.emotion_combo = ttk.Combobox(
@@ -236,7 +246,17 @@ class AppGUI(tk.Tk):
             values=MANUAL_EMOTION_OPTIONS,
             font=("Malgun Gothic", 10),
         )
-        self.emotion_combo.grid(row=1, column=2, sticky="ew", pady=(5, 0))
+        self.emotion_combo.grid(row=1, column=3, sticky="ew", padx=(0, 6), pady=(5, 0))
+
+        self.emotion_var2 = tk.StringVar(value="선택안함")
+        self.emotion_combo2 = ttk.Combobox(
+            context_frame,
+            textvariable=self.emotion_var2,
+            state="readonly",
+            values=["선택안함"] + list(MANUAL_EMOTION_OPTIONS),
+            font=("Malgun Gothic", 10),
+        )
+        self.emotion_combo2.grid(row=1, column=4, sticky="ew", pady=(5, 0))
 
         # 본문 입력 영역 (탭 분리: 텍스트 / 그림판)
         self.editor_notebook = ttk.Notebook(editor_card)
@@ -424,18 +444,49 @@ class AppGUI(tk.Tk):
                 self.location_var.set(row.get("location_name", ""))
                 saved_actual_weather = row.get("actual_weather", "")
                 saved_actual_weather_text = row.get("actual_weather_text", "")
-                saved_actual_weather_label = (
-                    f"{saved_actual_weather} {saved_actual_weather_text}".strip() if saved_actual_weather else ""
-                )
-                if saved_actual_weather_label in MANUAL_WEATHER_OPTIONS:
-                    self.actual_weather_var.set(saved_actual_weather_label)
+                
+                # 날씨 1, 2 로드
+                weathers_emoji = [w.strip() for w in saved_actual_weather.split(",") if w.strip()]
+                weathers_text = [w.strip() for w in saved_actual_weather_text.split(",") if w.strip()]
+                
+                def find_weather_label(emoji, text):
+                    label = f"{emoji} {text}".strip()
+                    for opt in MANUAL_WEATHER_OPTIONS:
+                        if opt.strip() == label:
+                            return opt
+                    return None
+                    
+                if len(weathers_emoji) >= 1:
+                    lbl1 = find_weather_label(weathers_emoji[0], weathers_text[0] if len(weathers_text) >= 1 else "")
+                    self.actual_weather_var.set(lbl1 or MANUAL_WEATHER_OPTIONS[0])
                 else:
-                    self.actual_weather_var.set(MANUAL_WEATHER_OPTIONS[1])
+                    self.actual_weather_var.set(MANUAL_WEATHER_OPTIONS[0])
+                    
+                if len(weathers_emoji) >= 2:
+                    lbl2 = find_weather_label(weathers_emoji[1], weathers_text[1] if len(weathers_text) >= 2 else "")
+                    self.actual_weather_var2.set(lbl2 or "선택안함")
+                else:
+                    self.actual_weather_var2.set("선택안함")
+                    
+                # 감정 1, 2 로드
                 saved_emotion_label = row.get("emotion_label", DEFAULT_EMOTION) or DEFAULT_EMOTION
-                if saved_emotion_label in MANUAL_EMOTION_OPTIONS:
-                    self.emotion_var.set(saved_emotion_label)
+                emotions = [e.strip() for e in saved_emotion_label.split(",") if e.strip()]
+                
+                if len(emotions) >= 1:
+                    if emotions[0] in MANUAL_EMOTION_OPTIONS:
+                        self.emotion_var.set(emotions[0])
+                    else:
+                        self.emotion_var.set(DEFAULT_EMOTION)
                 else:
                     self.emotion_var.set(DEFAULT_EMOTION)
+                    
+                if len(emotions) >= 2:
+                    if emotions[1] in MANUAL_EMOTION_OPTIONS:
+                        self.emotion_var2.set(emotions[1])
+                    else:
+                        self.emotion_var2.set("선택안함")
+                else:
+                    self.emotion_var2.set("선택안함")
                 
                 # Text 위젯 클리어 후 텍스트 세팅
                 self.content_text.delete("1.0", tk.END)
@@ -480,29 +531,47 @@ class AppGUI(tk.Tk):
         title = self.title_var.get().strip()
         content = self.content_text.get("1.0", tk.END).strip()
         location_name = self.location_var.get().strip()
-        actual_weather_value = self.actual_weather_var.get().strip()
-        emotion_label = self.emotion_var.get().strip()
+        # 날씨 1, 2 처리
+        w_val1 = self.actual_weather_var.get().strip()
+        w_val2 = self.actual_weather_var2.get().strip()
+        
+        def get_weather_emoji(val):
+            return val.split(" ")[0] if val else ""
+        def get_weather_text(val):
+            return val.split(" ", 1)[1] if " " in val else val
+            
+        emoji1 = get_weather_emoji(w_val1)
+        text1 = get_weather_text(w_val1)
+        
+        if w_val2 and w_val2 != "선택안함":
+            emoji2 = get_weather_emoji(w_val2)
+            text2 = get_weather_text(w_val2)
+            actual_weather_emoji = f"{emoji1},{emoji2}"
+            actual_weather_text = f"{text1},{text2}"
+            actual_weather_value = f"{w_val1}, {w_val2}"
+        else:
+            actual_weather_emoji = emoji1
+            actual_weather_text = text1
+            actual_weather_value = w_val1
+            
+        # 감정 1, 2 처리
+        e_label1 = self.emotion_var.get().strip()
+        e_label2 = self.emotion_var2.get().strip()
+        
+        if e_label2 and e_label2 != "선택안함":
+            emotion_label = f"{e_label1},{e_label2}"
+            score1 = EMOTION_LABEL_TO_SCORE.get(e_label1, 0)
+            score2 = EMOTION_LABEL_TO_SCORE.get(e_label2, 0)
+            score = int(round((score1 + score2) / 2.0))
+            we1, wt1 = EMOTION_LABEL_TO_WEATHER.get(e_label1, ("⛅", "보통"))
+            we2, wt2 = EMOTION_LABEL_TO_WEATHER.get(e_label2, ("⛅", "보통"))
+            weather_emoji = f"{we1},{we2}"
+            weather_text = f"{wt1},{wt2}"
+        else:
+            emotion_label = e_label1
+            score = EMOTION_LABEL_TO_SCORE.get(e_label1, 0)
+            weather_emoji, weather_text = EMOTION_LABEL_TO_WEATHER.get(e_label1, ("⛅", "보통"))
 
-        # 1. 입력 유효성 검사 (결측치 핸들링)
-        if not content and not self._is_canvas_modified():
-            self.display_alert("일기 내용이나 그림을 입력해 주세요.")
-            return
-
-        # 날짜 포맷 검증
-        try:
-            datetime.strptime(date_str, "%Y-%m-%d")
-        except ValueError:
-            self.display_alert("날짜 형식이 올바르지 않습니다. (YYYY-MM-DD)")
-            return
-
-        if not title:
-            title = f"{date_str} 일기"
-
-        # 2. 사용자 선택 감정 기준으로 점수/표시값 결정
-        score = EMOTION_LABEL_TO_SCORE.get(emotion_label, 0)
-        weather_emoji, weather_text = EMOTION_LABEL_TO_WEATHER.get(emotion_label, ("⛅", "보통"))
-        actual_weather_emoji = actual_weather_value.split(" ")[0] if actual_weather_value else ""
-        actual_weather_text = actual_weather_value.split(" ", 1)[1] if " " in actual_weather_value else actual_weather_value
         result = {
             "score": score,
             "weather_emoji": weather_emoji,
@@ -593,8 +662,10 @@ class AppGUI(tk.Tk):
         self.date_var.set(datetime.now().strftime("%Y-%m-%d"))
         self.title_var.set("")
         self.location_var.set("")
-        self.actual_weather_var.set(MANUAL_WEATHER_OPTIONS[1])
+        self.actual_weather_var.set(MANUAL_WEATHER_OPTIONS[0])
+        self.actual_weather_var2.set("선택안함")
         self.emotion_var.set(DEFAULT_EMOTION)
+        self.emotion_var2.set("선택안함")
         self.content_text.delete("1.0", tk.END)
         self._existing_image_path = ""
         self._remove_existing_image = False
@@ -873,8 +944,15 @@ class AppGUI(tk.Tk):
 
         date_str = self.date_var.get().strip()
         location = self.location_var.get().strip()
-        weather = self.actual_weather_var.get().strip()
-        emotion = self.emotion_var.get().strip()
+        # 날씨 1, 2 결합
+        w1 = self.actual_weather_var.get().strip()
+        w2 = self.actual_weather_var2.get().strip()
+        weather = f"{w1}, {w2}" if w2 and w2 != "선택안함" else w1
+
+        # 감정 1, 2 결합
+        e1 = self.emotion_var.get().strip()
+        e2 = self.emotion_var2.get().strip()
+        emotion = f"{e1}, {e2}" if e2 and e2 != "선택안함" else e1
 
         # 마우스 커서 대기 상태
         self.config(cursor="watch")
@@ -940,6 +1018,8 @@ class AppGUI(tk.Tk):
             required_height = container.winfo_reqheight() + 50
             dialog.geometry(f"500x{required_height}")
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             status_var.set(f"❌ AI 분석에 실패했습니다:\n\n{str(e)}")
             status_label.configure(foreground=COLOR_DANGER)
             ok_button.configure(state="normal")

@@ -8,8 +8,10 @@ from typing import Dict
 WEATHER_FILTERS = (
     "☀️ 맑음",
     "⛅ 흐림",
+    "☁️ 구름많음",
     "🌧️ 비",
     "❄️ 눈",
+    "⚡ 번개",
 )
 
 EMOTION_FILTERS = (
@@ -63,8 +65,10 @@ ALL_FILTER_OPTIONS = ("전체보기",) + WEATHER_FILTERS + EMOTION_FILTERS
 WEATHER_LABEL_TO_EMOJI: Dict[str, str] = {
     "☀️ 맑음": "☀️",
     "⛅ 흐림": "⛅",
+    "☁️ 구름많음": "☁️",
     "🌧️ 비": "🌧️",
     "❄️ 눈": "❄️",
+    "⚡ 번개": "⚡",
 }
 
 
@@ -77,12 +81,21 @@ def matches_filter(row: dict, filter_value: str) -> bool:
 
     emotion_label = row.get("emotion_label", "")
     try:
-        score = int(row.get("score", 0))
+        score = int(row.get("score", ""))
     except (TypeError, ValueError):
-        score = EMOTION_LABEL_TO_SCORE.get(emotion_label, 0)
+        # 콤마로 구분된 복수 감정 레이블 처리
+        labels = [l.strip() for l in emotion_label.split(",") if l.strip()]
+        if labels:
+            scores = [EMOTION_LABEL_TO_SCORE.get(l, 0) for l in labels]
+            score = sum(scores) / len(scores)
+        else:
+            score = 0
 
     if filter_value in WEATHER_LABEL_TO_EMOJI:
-        return weather == WEATHER_LABEL_TO_EMOJI[filter_value]
+        target_emoji = WEATHER_LABEL_TO_EMOJI[filter_value]
+        # 날씨에 다중 매칭 지원
+        emojis = [w.strip() for w in weather.split(",")]
+        return target_emoji in emojis
 
     if filter_value == "긍정 일기":
         return score > 0

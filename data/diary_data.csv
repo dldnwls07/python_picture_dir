@@ -1,3 +1,2 @@
 id,date,title,content,score,emotion_label,weather,actual_weather,actual_weather_text,weather_source,location_name,image_path,created_at
-1,2026-07-08,늙크크,파이선시발,5,행복했어요,☀️,☀️,맑음,manual,집,/Users/woojin/Developer/dir_py/data/images/diary_20260708173239_7a47b1.png,2026-07-08 17:32:39
-2,2026-07-08,힘드렁,너무슬프다 ㅠㅠㅠ,-2,고독,☁️,⛅,흐림,manual,시흥,/Users/woojin/Developer/dir_py/data/images/diary_20260708174950_c786e5.png,2026-07-08 17:46:48
+1,2026-07-08,수업 힘들지만 술먹을거야,"오늘은 파이썬 중간고사를 보았고 시험은 그럭저럭 본거같다. 그리고 프로젝트팀도 나왔다, 나쁘지않은거같다. 다만 오늘 시험이 조금 아쉽게 본거같다. 프로젝트에 집중하자. 그리고 오늘 저녁에 학교 사람들과 편백찜과 술을 먹어서 좋았다",1,"재미있었어요,피곤했어요","🌤️,☁️","⛅,🌧️","흐림,비",manual,한국공학대학교,/Users/woojin/Developer/dir_py/data/images/diary_20260708180319_e0c6fc.png,2026-07-08 18:03:19
