@@ -29,6 +29,7 @@ import collections
 
 from engine.text_processor import TextProcessor
 from engine.keyword_analyzer import KeywordAnalyzer
+from engine.ai_helper import AIHelper
 from diary_categories import (
     ALL_FILTER_OPTIONS,
     DEFAULT_EMOTION,
@@ -52,6 +53,7 @@ COLOR_PRIMARY = "#4D96FF"     # 블루 (저장 / 분석)
 COLOR_SECONDARY = "#6C757D"   # 그레이 (새 일기)
 COLOR_DANGER = "#FF6B6B"      # 레드 (삭제)
 COLOR_SUCCESS = "#6BCB77"     # 그린 (성공 메시지 등)
+COLOR_AI = "#9B5DE5"          # 퍼플 (AI 기능)
 
 
 def adjust_color_brightness(hex_color, factor=0.9):
@@ -97,6 +99,7 @@ class AppGUI(tk.Tk):
         self._text_processor = TextProcessor()
         self._keyword_analyzer = KeywordAnalyzer()
         self._file_manager = FileManager()
+        self._ai_helper = AIHelper()
 
         # 현재 선택된 일기 ID (수정 모드 식별용)
         self._current_diary_id = None
@@ -338,6 +341,10 @@ class AppGUI(tk.Tk):
         self.btn_monthly_stats.pack(side="right")
         style_flat_button(self.btn_monthly_stats, COLOR_SECONDARY)
 
+        self.btn_ai = tk.Button(btn_frame, text="🤖 AI 공감")
+        self.btn_ai.pack(side="right", padx=(0, 10))
+        style_flat_button(self.btn_ai, COLOR_AI)
+
         # ────────────────────────────────────────────────────────
         # STATUS BAR: 상태 표시줄
         # ────────────────────────────────────────────────────────
@@ -362,6 +369,7 @@ class AppGUI(tk.Tk):
         self.btn_delete.configure(command=self._on_delete_clicked)
         self.btn_mindmap.configure(command=self.show_mindmap_window)
         self.btn_monthly_stats.configure(command=self.show_monthly_stats_window)
+        self.btn_ai.configure(command=self.show_ai_empathy_window)
         
         # 리스트박스 선택 및 필터 콤보박스 바인드
         self.diary_listbox.bind("<<ListboxSelect>>", self._on_diary_selected)
@@ -795,6 +803,154 @@ class AppGUI(tk.Tk):
         # 버튼 커맨드 설정 및 첫 분석 자동 기동
         btn_analyze.config(command=run_analysis)
         run_analysis()
+
+    def show_ai_empathy_window(self):
+        """AI의 일기 요약 및 따뜻한 공감 멘트를 표시하는 창을 연다."""
+        content = self.content_text.get("1.0", tk.END).strip()
+        if not content:
+            self.display_alert("공감할 일기 내용이 없습니다. 내용을 먼저 입력해주세요!")
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("🤖 AI 공감 일기 도우미")
+        dialog.geometry("500x380")
+        dialog.configure(bg=COLOR_BG)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        # 메인 컨테이너 프레임
+        container = ttk.Frame(dialog, padding=20, style="Card.TFrame")
+        container.pack(fill="both", expand=True, padx=15, pady=15)
+
+        title_label = ttk.Label(
+            container,
+            text="🤖 AI 일기 분석 및 공감",
+            font=("Malgun Gothic", 14, "bold"),
+            foreground=COLOR_AI
+        )
+        title_label.pack(anchor="w", pady=(0, 15))
+
+        status_var = tk.StringVar(value="AI가 일기를 읽고 공감하는 중입니다...\n잠시만 기다려주세요. ✨")
+        status_label = ttk.Label(
+            container,
+            textvariable=status_var,
+            font=("Malgun Gothic", 11),
+            justify="center",
+            anchor="center"
+        )
+        status_label.pack(fill="both", expand=True, pady=20)
+
+        # 확인 버튼
+        ok_button = tk.Button(container, text="확인", command=dialog.destroy)
+        style_flat_button(ok_button, COLOR_PRIMARY)
+        ok_button.pack(side="bottom", anchor="center", pady=(15, 0))
+        ok_button.configure(state="disabled")
+
+        # 그림이 존재하는지 체크 및 Base64 추출
+        image_base64 = ""
+        has_drawing = bool(self._existing_image_path) or self._is_canvas_modified()
+        if has_drawing:
+            import base64
+            if self._existing_image_path and not self._is_canvas_modified() and os.path.exists(self._existing_image_path):
+                try:
+                    with open(self._existing_image_path, "rb") as image_file:
+                        image_base64 = base64.b64encode(image_file.read()).decode("utf-8")
+                except Exception as e:
+                    print(f"디스크에서 이미지 읽기 실패: {e}")
+            elif self._draw_image:
+                try:
+                    from io import BytesIO
+                    buffered = BytesIO()
+                    self._draw_image.save(buffered, format="PNG")
+                    img_bytes = buffered.getvalue()
+                    image_base64 = base64.b64encode(img_bytes).decode("utf-8")
+                except Exception as e:
+                    print(f"PIL 이미지 Base64 변환 실패: {e}")
+
+        # UI 렌더링 갱신
+        dialog.update_idletasks()
+        dialog.update()
+
+        date_str = self.date_var.get().strip()
+        location = self.location_var.get().strip()
+        weather = self.actual_weather_var.get().strip()
+        emotion = self.emotion_var.get().strip()
+
+        # 마우스 커서 대기 상태
+        self.config(cursor="watch")
+        dialog.config(cursor="watch")
+        dialog.update()
+
+        try:
+            result = self._ai_helper.analyze_diary(
+                date=date_str,
+                content=content,
+                location=location,
+                weather=weather,
+                emotion=emotion,
+                image_base64=image_base64
+            )
+
+            # 로딩 라벨 제거
+            status_label.pack_forget()
+
+            # 요약 섹션
+            summary_frame = ttk.LabelFrame(container, text="📝 1줄 요약", padding=10)
+            summary_frame.pack(fill="x", pady=(0, 15))
+            
+            summary_text = ttk.Label(
+                summary_frame,
+                text=result["summary"],
+                wraplength=420,
+                justify="left",
+                font=("Malgun Gothic", 10)
+            )
+            summary_text.pack(fill="x", expand=True)
+
+            # 공감 섹션
+            empathy_frame = ttk.LabelFrame(container, text="💖 AI의 공감과 한마디", padding=10)
+            empathy_frame.pack(fill="x", pady=(0, 15))
+            
+            empathy_text = ttk.Label(
+                empathy_frame,
+                text=result["empathy"],
+                wraplength=420,
+                justify="left",
+                font=("Malgun Gothic", 10)
+            )
+            empathy_text.pack(fill="x", expand=True)
+
+            # 그림 분석 섹션
+            drawing_frame = ttk.LabelFrame(container, text="🎨 그림 분석", padding=10)
+            drawing_frame.pack(fill="x")
+            
+            drawing_text = ttk.Label(
+                drawing_frame,
+                text=result["drawing_analysis"],
+                wraplength=420,
+                justify="left",
+                font=("Malgun Gothic", 10)
+            )
+            drawing_text.pack(fill="x", expand=True)
+
+            ok_button.configure(state="normal")
+            
+            # 동적 창 크기 조절
+            dialog.update_idletasks()
+            required_height = container.winfo_reqheight() + 50
+            dialog.geometry(f"500x{required_height}")
+        except Exception as e:
+            status_var.set(f"❌ AI 분석에 실패했습니다:\n\n{str(e)}")
+            status_label.configure(foreground=COLOR_DANGER)
+            ok_button.configure(state="normal")
+            
+            # 실패 시에도 크기 조절
+            dialog.update_idletasks()
+            required_height = container.winfo_reqheight() + 50
+            dialog.geometry(f"500x{required_height}")
+        finally:
+            self.config(cursor="")
+            dialog.config(cursor="")
 
     # ── 월간 감정 통계 창 ──────────────────────────
 

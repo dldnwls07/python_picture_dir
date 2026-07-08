@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QDialog, QMessageBox, QListWidgetItem,
     QLabel, QComboBox, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton,
-    QTableWidgetItem, QHeaderView,
+    QTableWidgetItem, QHeaderView, QApplication,
 )
 from PyQt5.QtCore import QDate, Qt
 from PyQt5.QtGui import QPixmap, QColor, QPainter, QPen, QImage
@@ -26,6 +26,7 @@ configure_runtime(PROJECT_ROOT)
 
 from engine.keyword_analyzer import KeywordAnalyzer
 from engine.text_processor import TextProcessor
+from engine.ai_helper import AIHelper
 from diary_categories import (
     ALL_FILTER_OPTIONS,
     DEFAULT_EMOTION,
@@ -145,6 +146,7 @@ class AppGUI(QMainWindow):
         self._keyword_analyzer = KeywordAnalyzer()
         self._text_processor = TextProcessor()
         self._file_manager = FileManager()
+        self._ai_helper = AIHelper()
 
         # 현재 선택된 일기 ID (수정 모드용)
         self._current_diary_id = None
@@ -238,6 +240,11 @@ class AppGUI(QMainWindow):
         self.rightLayout.setStretchFactor(draw_layout, 3)
         self.rightLayout.setStretchFactor(text_layout, 2)
 
+        # AI 공감 버튼 동적 생성 및 스타일링
+        self.aiButton = QPushButton("🤖 AI 공감")
+        self.aiButton.setObjectName("aiButton")
+        self.buttonLayout.insertWidget(4, self.aiButton)
+
         # QComboBox 스타일을 다크 모드에 맞게 전역 추가 (QTabWidget 스타일 제거)
         extra_style = """
         QComboBox {
@@ -272,6 +279,22 @@ class AppGUI(QMainWindow):
         QTextEdit:focus {
             border: 1px solid #89b4fa;
         }
+        QPushButton#aiButton {
+            background-color: #c6a0f6;
+            color: #1e1e2e;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 20px;
+            font-size: 13px;
+            font-weight: bold;
+        }
+        QPushButton#aiButton:hover {
+            background-color: #b7bdf8;
+        }
+        QPushButton#aiButton:pressed {
+            background-color: #585b70;
+            color: #cdd6f4;
+        }
         """
         self.setStyleSheet(self.styleSheet() + extra_style)
 
@@ -281,6 +304,7 @@ class AppGUI(QMainWindow):
         self.deleteButton.clicked.connect(self._on_delete_clicked)
         self.mindmapButton.clicked.connect(self.show_mindmap_window)
         self.newButton.clicked.connect(self._on_new_clicked)
+        self.aiButton.clicked.connect(self.show_ai_empathy_window)
         self.diaryListWidget.currentItemChanged.connect(self._on_diary_selected)
         self.filterComboBox.currentTextChanged.connect(self._load_diary_list)
         self.colorComboBox.currentTextChanged.connect(self.drawingCanvas.set_pen_color)
@@ -507,6 +531,144 @@ class AppGUI(QMainWindow):
     def _has_drawn_content(self) -> bool:
         """현재 그림 일기 내용이 존재하는지 반환한다."""
         return self.drawingCanvas.has_image_content() or bool(self._existing_image_path)
+
+    def show_ai_empathy_window(self):
+        """AI의 일기 요약 및 따뜻한 공감 멘트를 표시하는 창을 연다."""
+        content = self.contentEdit.toPlainText().strip()
+        if not content:
+            self.display_alert("공감할 일기 내용이 없습니다. 내용을 먼저 입력해주세요!")
+            return
+
+        # QDialog 레이아웃 구성
+        dialog = QDialog(self)
+        dialog.setWindowTitle("🤖 AI 공감 일기 도우미")
+        dialog.setFixedWidth(520)
+        dialog.setMinimumHeight(240)
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #1e1e2e;
+            }
+            QLabel {
+                color: #cdd6f4;
+                font-family: "Apple SD Gothic Neo", "-apple-system", sans-serif;
+            }
+            QPushButton {
+                background-color: #89b4fa;
+                color: #1e1e2e;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #74c7ec;
+            }
+        """)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(15)
+        layout.setContentsMargins(24, 24, 24, 24)
+
+        title_label = QLabel("🤖 AI 일기 분석 및 공감")
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #c6a0f6;")
+        layout.addWidget(title_label)
+
+        status_label = QLabel("AI가 일기를 읽고 공감하는 중입니다...\n잠시만 기다려주세요. ✨")
+        status_label.setStyleSheet("font-size: 13px; line-height: 1.5;")
+        status_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(status_label)
+
+        ok_button = QPushButton("확인")
+        ok_button.setEnabled(False)
+        ok_button.clicked.connect(dialog.accept)
+        layout.addWidget(ok_button, 0, Qt.AlignCenter)
+
+        # 다이얼로그를 먼저 띄워 로딩 상태를 보여줌
+        dialog.show()
+        QApplication.processEvents()
+
+        # 그림 Base64 데이터 추출
+        image_base64 = ""
+        if self._has_drawn_content():
+            import base64
+            # 만약 기존 저장된 이미지가 존재하고 새로 그리지 않았다면 디스크의 이미지 파일에서 바로 읽음
+            if self._existing_image_path and not self.drawingCanvas._dirty and os.path.exists(self._existing_image_path):
+                try:
+                    with open(self._existing_image_path, "rb") as image_file:
+                        image_base64 = base64.b64encode(image_file.read()).decode("utf-8")
+                except Exception as e:
+                    print(f"디스크에서 이미지 읽기 실패: {e}")
+            else:
+                # 새롭게 그렸거나 수정된 경우 캔버스에서 직접 이미지 데이터 추출
+                try:
+                    from PyQt5.QtCore import QBuffer
+                    qimage = self.drawingCanvas.export_image()
+                    buffer = QBuffer()
+                    buffer.open(QBuffer.WriteOnly)
+                    qimage.save(buffer, "PNG")
+                    img_bytes = bytes(buffer.data())
+                    image_base64 = base64.b64encode(img_bytes).decode("utf-8")
+                except Exception as e:
+                    print(f"캔버스 이미지 Base64 변환 실패: {e}")
+
+        date_str = self.dateEdit.date().toString("yyyy-MM-dd")
+        location = self.locationLineEdit.text().strip()
+        weather = self.actualWeatherComboBox.currentText().strip()
+        emotion = self.emotionComboBox.currentText().strip()
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            result = self._ai_helper.analyze_diary(
+                date=date_str,
+                content=content,
+                location=location,
+                weather=weather,
+                emotion=emotion,
+                image_base64=image_base64
+            )
+
+            # 로딩 라벨 제거
+            status_label.deleteLater()
+
+            summary_title = QLabel("📝 1줄 요약")
+            summary_title.setStyleSheet("font-weight: bold; color: #89b4fa; font-size: 13px;")
+            layout.insertWidget(1, summary_title)
+
+            summary_text = QLabel(result["summary"])
+            summary_text.setWordWrap(True)
+            summary_text.setStyleSheet("background-color: #313244; padding: 10px; border-radius: 6px; font-size: 13px; line-height: 1.4;")
+            layout.insertWidget(2, summary_text)
+
+            empathy_title = QLabel("💖 AI의 공감과 한마디")
+            empathy_title.setStyleSheet("font-weight: bold; color: #a6e3a1; font-size: 13px;")
+            layout.insertWidget(3, empathy_title)
+
+            empathy_text = QLabel(result["empathy"])
+            empathy_text.setWordWrap(True)
+            empathy_text.setStyleSheet("background-color: #313244; padding: 12px; border-radius: 6px; font-size: 13px; line-height: 1.5;")
+            layout.insertWidget(4, empathy_text)
+
+            drawing_title = QLabel("🎨 그림 분석")
+            drawing_title.setStyleSheet("font-weight: bold; color: #f9e2af; font-size: 13px;")
+            layout.insertWidget(5, drawing_title)
+
+            drawing_text = QLabel(result["drawing_analysis"])
+            drawing_text.setWordWrap(True)
+            drawing_text.setStyleSheet("background-color: #313244; padding: 12px; border-radius: 6px; font-size: 13px; line-height: 1.5;")
+            layout.insertWidget(6, drawing_text)
+
+            ok_button.setEnabled(True)
+            dialog.adjustSize()
+        except Exception as e:
+            status_label.setText(f"❌ AI 분석에 실패했습니다:\n\n{str(e)}")
+            status_label.setStyleSheet("color: #f38ba8; font-size: 13px;")
+            ok_button.setEnabled(True)
+            dialog.adjustSize()
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        dialog.exec_()
 
     def show_mindmap_window(self):
         """키워드 분석(마인드맵) 팝업 창을 띄운다."""

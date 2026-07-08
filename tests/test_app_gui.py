@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch, MagicMock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -44,6 +45,31 @@ class AppGuiTest(unittest.TestCase):
         self.assertEqual(rows[0]["emotion_label"], "행복했어요")
         self.assertTrue(rows[0]["image_path"])
         self.assertNotEqual(rows[0]["score"], "")
+
+    @patch("PyQt5.QtWidgets.QDialog.exec_")
+    def test_show_ai_empathy_window(self, mock_dialog_exec):
+        # QDialog.exec_가 호출될 때 즉시 닫히도록 설정
+        mock_dialog_exec.return_value = 1
+        
+        # AIHelper.analyze_diary 모킹
+        self.window._ai_helper.analyze_diary = MagicMock(return_value={
+            "summary": "Mock 요약",
+            "empathy": "Mock 공감",
+            "drawing_analysis": "Mock 그림 분석"
+        })
+        
+        # 내용이 비었을 때는 경고만 울리고 API를 호출하지 않음
+        self.window.contentEdit.setPlainText("")
+        # display_alert 모킹해서 실제 다이얼로그 팝업 차단
+        self.window.display_alert = MagicMock()
+        self.window.show_ai_empathy_window()
+        self.window.display_alert.assert_called_once()
+        self.window._ai_helper.analyze_diary.assert_not_called()
+        
+        # 본문 기입 후 정상 작동 테스트
+        self.window.contentEdit.setPlainText("오늘 정말 신나는 일상을 보냈다.")
+        self.window.show_ai_empathy_window()
+        self.window._ai_helper.analyze_diary.assert_called_once()
 
 
 if __name__ == "__main__":
