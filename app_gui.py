@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QDialog, QMessageBox, QListWidgetItem,
     QLabel, QComboBox, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QTableWidgetItem, QHeaderView, QApplication, QScrollArea,
+    QCheckBox, QInputDialog,
 )
 from PyQt5.QtCore import QDate, Qt
 from PyQt5.QtGui import QPixmap, QColor, QPainter, QPen, QImage
@@ -34,6 +35,7 @@ from diary_categories import (
     MANUAL_EMOTION_OPTIONS,
     MANUAL_WEATHER_OPTIONS,
     matches_filter,
+    score_to_tier,
 )
 from manager.file_manager import FileManager
 
@@ -226,7 +228,11 @@ class AppGUI(QMainWindow):
         title_label = QLabel("제목:")
         title_label.setStyleSheet("font-weight: bold; color: #89b4fa; font-size: 14px;")
         title_row.addWidget(title_label)
-        title_row.addWidget(self.titleEdit)
+        title_row.addWidget(self.titleEdit, 1)
+        
+        self.hideCheckBox = QCheckBox("🔒 비밀 일기(숨기기)")
+        self.hideCheckBox.setStyleSheet("color: #f38ba8; font-weight: bold; font-size: 13px;")
+        title_row.addWidget(self.hideCheckBox)
         
         text_layout.addLayout(title_row)
         
@@ -393,6 +399,33 @@ class AppGUI(QMainWindow):
         elif self._current_diary_id is not None and self._remove_existing_image:
             remove_existing_image = True
 
+        # 비밀 일기(숨기기) 및 비밀번호 처리
+        is_hidden_val = "False"
+        password_val = ""
+        if self.hideCheckBox.isChecked():
+            is_hidden_val = "True"
+            # 기존 저장되어 있던 비밀번호가 있는지 로드
+            existing_pwd = ""
+            if self._current_diary_id is not None:
+                all_data = self._file_manager.read_all_csv()
+                for r in all_data:
+                    if int(r.get("id", 0)) == self._current_diary_id:
+                        existing_pwd = r.get("password", "")
+                        break
+            password_val = existing_pwd
+            if not password_val:
+                pwd, ok = QInputDialog.getText(
+                    self, "🔒 비밀번호 설정",
+                    "이 일기를 숨길 비밀번호를 설정해주세요:",
+                    QLineEdit.Password
+                )
+                if ok and pwd.strip():
+                    password_val = pwd.strip()
+                else:
+                    self.hideCheckBox.setChecked(False)
+                    is_hidden_val = "False"
+                    password_val = ""
+
         data_dict = {
             "date": date_str,
             "title": title,
@@ -405,6 +438,8 @@ class AppGUI(QMainWindow):
             "weather_source": "manual",
             "location_name": location_name,
             "remove_image": remove_existing_image,
+            "is_hidden": is_hidden_val,
+            "password": password_val,
         }
         if image_path:
             data_dict["image_path"] = image_path
@@ -469,8 +504,9 @@ class AppGUI(QMainWindow):
         self._existing_image_path = ""
         self._remove_existing_image = False
         self._clear_canvas(mark_removed=False)
+        self.hideCheckBox.setChecked(False)
         self.weatherLabel.setText("⛅")
-        self.scoreLabel.setText(f"감정 상태: {DEFAULT_EMOTION} (0점)")
+        self.scoreLabel.setText(f"감정 상태: {DEFAULT_EMOTION} (0점, 티어: C)")
         self.deleteButton.setEnabled(False)
         self.diaryListWidget.clearSelection()
         self._set_status_message("새 일기를 작성해 보세요. ✍️")
@@ -488,6 +524,24 @@ class AppGUI(QMainWindow):
         all_data = self._file_manager.read_all_csv()
         for row in all_data:
             if int(row.get("id", 0)) == diary_id:
+                # 🔒 비밀 일기 비밀번호 검증
+                is_hidden = row.get("is_hidden", "False") == "True"
+                if is_hidden:
+                    correct_pwd = row.get("password", "")
+                    pwd, ok = QInputDialog.getText(
+                        self, "🔒 비밀 일기 해제",
+                        "이 일기는 숨겨져 있습니다.\n설정하신 비밀번호를 입력해주세요:",
+                        QLineEdit.Password
+                    )
+                    if not ok or pwd != correct_pwd:
+                        QMessageBox.warning(self, "오류", "비밀번호가 올바르지 않습니다.")
+                        # 선택 해제
+                        self.diaryListWidget.blockSignals(True)
+                        self.diaryListWidget.clearSelection()
+                        self._on_new_clicked()
+                        self.diaryListWidget.blockSignals(False)
+                        return
+
                 self._current_diary_id = diary_id
                 self.dateEdit.setDate(QDate.fromString(row["date"], "yyyy-MM-dd"))
                 self.titleEdit.setText(row.get("title", ""))
@@ -541,7 +595,7 @@ class AppGUI(QMainWindow):
                 self._existing_image_path = ""
                 self._remove_existing_image = False
                 self._clear_canvas(mark_removed=False)
-
+ 
                 image_path = row.get("image_path", "")
                 if image_path and os.path.exists(image_path):
                     try:
@@ -549,13 +603,15 @@ class AppGUI(QMainWindow):
                         self._existing_image_path = image_path
                     except Exception as e:
                         print(f"이미지 로드 실패: {e}")
-
+ 
                 # 날씨 표시
                 weather = row.get("weather", "⛅")
                 score = int(row.get("score", 0))
+                tier = score_to_tier(score)
                 self.weatherLabel.setText(weather)
-                self.scoreLabel.setText(f"감정 상태: {emotion_label} ({score}점)")
-
+                self.scoreLabel.setText(f"감정 상태: {emotion_label} ({score}점, 티어: {tier})")
+                self.hideCheckBox.setChecked(is_hidden)
+ 
                 self.deleteButton.setEnabled(True)
                 self._set_status_message(
                     f"📖 {row['date']} — {row.get('title', '')}"
@@ -583,10 +639,14 @@ class AppGUI(QMainWindow):
             title = row.get("title", "제목 없음")
             weather = row.get("actual_weather") or row.get("weather", "")
             diary_id = int(row.get("id", 0))
+            is_hidden = row.get("is_hidden", "False") == "True"
             if not matches_filter(row, filter_value):
                 continue
 
-            display_text = f"{weather} {date_str}\n     {title}"
+            if is_hidden:
+                display_text = f"🔒 숨겨진 일기 ({date_str})"
+            else:
+                display_text = f"{weather} {date_str}\n     {title}"
             item = QListWidgetItem(display_text)
             item.setData(Qt.UserRole, diary_id)
             self.diaryListWidget.addItem(item)

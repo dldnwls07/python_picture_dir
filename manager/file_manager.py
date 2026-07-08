@@ -27,6 +27,8 @@ class FileManager:
         "location_name",
         "image_path",
         "created_at",
+        "is_hidden",
+        "password",
     ]
 
     def __init__(self, filepath: str = None):
@@ -166,6 +168,8 @@ class FileManager:
                 "location_name": data_dict.get("location_name", ""),
                 "image_path": data_dict.get("image_path", ""),
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "is_hidden": data_dict.get("is_hidden", "False"),
+                "password": data_dict.get("password", ""),
             }
             all_data.append(row)
             return self._save_all_atomic(all_data)

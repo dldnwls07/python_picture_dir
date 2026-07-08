@@ -1,9 +1,16 @@
 import unittest
 
-from diary_categories import matches_filter
+from diary_categories import matches_filter, score_to_tier
 
 
 class DiaryCategoriesTest(unittest.TestCase):
+    def test_score_to_tier(self):
+        self.assertEqual(score_to_tier(5), "A+")
+        self.assertEqual(score_to_tier(3), "A")
+        self.assertEqual(score_to_tier(1), "B")
+        self.assertEqual(score_to_tier(0), "C")
+        self.assertEqual(score_to_tier(-1), "D")
+        self.assertEqual(score_to_tier(-5), "F")
     def test_weather_filters(self):
         self.assertTrue(matches_filter({"weather": "☀️", "score": "1"}, "☀️ 맑음"))
         self.assertTrue(matches_filter({"weather": "⛅", "score": "0"}, "⛅ 흐림"))

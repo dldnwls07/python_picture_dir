@@ -6,7 +6,7 @@ AppGUI — Tkinter 기반 메인 GUI 클래스
 import os
 import sys
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 from datetime import datetime, timedelta
 from io import BytesIO
 
@@ -38,6 +38,7 @@ from diary_categories import (
     MANUAL_EMOTION_OPTIONS,
     MANUAL_WEATHER_OPTIONS,
     matches_filter,
+    score_to_tier,
 )
 from manager.file_manager import FileManager
 
@@ -202,6 +203,11 @@ class AppGUI(tk.Tk):
         self.title_var = tk.StringVar()
         self.title_entry = ttk.Entry(meta_frame, textvariable=self.title_var, font=("Malgun Gothic", 10))
         self.title_entry.grid(row=1, column=1, sticky="ew", pady=(5, 0))
+        
+        self.hide_var = tk.BooleanVar(value=False)
+        self.hide_check = ttk.Checkbutton(meta_frame, text="🔒 비밀 일기(숨기기)", variable=self.hide_var)
+        self.hide_check.grid(row=1, column=2, sticky="w", pady=(5, 0), padx=(10, 0))
+        
         meta_frame.columnconfigure(1, weight=1)
 
         # 위치 / 현재 날씨 / 오늘 감정
@@ -416,10 +422,14 @@ class AppGUI(tk.Tk):
             title = row.get("title", "제목 없음")
             weather = row.get("actual_weather") or row.get("weather", "⛅")
             diary_id = int(row.get("id", 0))
+            is_hidden = row.get("is_hidden", "False") == "True"
             if not matches_filter(row, filter_val):
                 continue
 
-            display_text = f" {weather}  {date_str}  |  {title}"
+            if is_hidden:
+                display_text = f" 🔒  숨겨진 일기 ({date_str})"
+            else:
+                display_text = f" {weather}  {date_str}  |  {title}"
             self.diary_listbox.insert(tk.END, display_text)
             self._list_diary_ids.append(diary_id)
 
@@ -438,6 +448,22 @@ class AppGUI(tk.Tk):
         all_data = self._file_manager.read_all_csv()
         for row in all_data:
             if int(row.get("id", 0)) == diary_id:
+                # 🔒 비밀 일기 비밀번호 검증
+                is_hidden = row.get("is_hidden", "False") == "True"
+                if is_hidden:
+                    correct_pwd = row.get("password", "")
+                    pwd = simpledialog.askstring(
+                        "🔒 비밀 일기 해제",
+                        "이 일기는 숨겨져 있습니다.\n설정하신 비밀번호를 입력해주세요:",
+                        show="*"
+                    )
+                    if pwd != correct_pwd:
+                        messagebox.showwarning("오류", "비밀번호가 올바르지 않습니다.")
+                        # 선택 해제
+                        self.diary_listbox.selection_clear(0, tk.END)
+                        self._on_new_clicked()
+                        return
+
                 self._current_diary_id = diary_id
                 self.date_var.set(row["date"])
                 self.title_var.set(row.get("title", ""))
@@ -513,10 +539,12 @@ class AppGUI(tk.Tk):
                 # 날씨 & 스코어 렌더링
                 weather = row.get("weather", "⛅")
                 score = int(row.get("score", 0))
+                tier = score_to_tier(score)
                 self.weather_label.config(text=weather)
                 emotion_label = row.get("emotion_label", DEFAULT_EMOTION) or DEFAULT_EMOTION
-                self.score_label.config(text=f"감정 상태: {emotion_label} ({score}점)")
-                actual_weather_line = saved_actual_weather_label or "미입력"
+                self.score_label.config(text=f"감정 상태: {emotion_label} ({score}점, 티어: {tier})")
+                self.hide_var.set(is_hidden)
+                actual_weather_line = saved_actual_weather or "미입력"
                 location_line = row.get("location_name", "") or "미입력"
                 self.detail_label.config(text=f"현재 날씨: {actual_weather_line}\n위치: {location_line}")
 
@@ -591,6 +619,33 @@ class AppGUI(tk.Tk):
         elif self._current_diary_id is not None and self._remove_existing_image:
             remove_existing_image = True
 
+        # 비밀 일기(숨기기) 및 비밀번호 처리
+        is_hidden_val = "False"
+        password_val = ""
+        if self.hide_var.get():
+            is_hidden_val = "True"
+            # 기존 저장되어 있던 비밀번호가 있는지 로드
+            existing_pwd = ""
+            if self._current_diary_id is not None:
+                all_data = self._file_manager.read_all_csv()
+                for r in all_data:
+                    if int(r.get("id", 0)) == self._current_diary_id:
+                        existing_pwd = r.get("password", "")
+                        break
+            password_val = existing_pwd
+            if not password_val:
+                pwd = simpledialog.askstring(
+                    "🔒 비밀번호 설정",
+                    "이 일기를 숨길 비밀번호를 설정해주세요:",
+                    show="*"
+                )
+                if pwd and pwd.strip():
+                    password_val = pwd.strip()
+                else:
+                    self.hide_var.set(False)
+                    is_hidden_val = "False"
+                    password_val = ""
+
         data_dict = {
             "date": date_str,
             "title": title,
@@ -603,6 +658,8 @@ class AppGUI(tk.Tk):
             "weather_source": "manual",
             "location_name": location_name,
             "remove_image": remove_existing_image,
+            "is_hidden": is_hidden_val,
+            "password": password_val,
         }
         
         # 새 그림이 저장되었으면 경로 갱신
@@ -670,9 +727,10 @@ class AppGUI(tk.Tk):
         self._existing_image_path = ""
         self._remove_existing_image = False
         self._clear_canvas(mark_removed=False)
+        self.hide_var.set(False)
         
         self.weather_label.config(text="⛅")
-        self.score_label.config(text=f"감정 상태: {DEFAULT_EMOTION} (0점)")
+        self.score_label.config(text=f"감정 상태: {DEFAULT_EMOTION} (0점, 티어: C)")
         self.detail_label.config(text="현재 날씨와 위치를 입력해 주세요.")
         
         # 삭제 버튼 비활성화

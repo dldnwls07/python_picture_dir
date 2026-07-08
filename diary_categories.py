@@ -105,3 +105,19 @@ def matches_filter(row: dict, filter_value: str) -> bool:
         return score < 0
 
     return True
+
+
+def score_to_tier(score: float) -> str:
+    """점수를 기반으로 감정 등급(A+ ~ F) 티어를 반환한다."""
+    if score >= 5:
+        return "A+"
+    elif score >= 3:
+        return "A"
+    elif score >= 1:
+        return "B"
+    elif score >= 0:
+        return "C"
+    elif score >= -2:
+        return "D"
+    else:
+        return "F"
