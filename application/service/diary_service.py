@@ -34,6 +34,11 @@ class DiaryService:
         diaries = self._repository.find_all()
         return [d for d in diaries if not d.is_hidden and d.matches_filter(filter_value)]
 
+    def get_hidden_diaries(self, filter_value: str = "전체보기") -> List[Diary]:
+        """비밀 일기장 모드 전용 조회 — 숨겨진 일기만 필터 조건에 맞춰 반환합니다."""
+        diaries = self._repository.find_all()
+        return [d for d in diaries if d.is_hidden and d.matches_filter(filter_value)]
+
     def get_diary_by_id(self, diary_id: int) -> Optional[Diary]:
         """ID로 특정 일기를 조회합니다."""
         return self._repository.find_by_id(diary_id)
@@ -50,6 +55,10 @@ class DiaryService:
     def has_secret_password(self) -> bool:
         """비밀 일기장 비밀번호가 이미 설정되어 있는지 확인합니다."""
         return self._password_store.has_password()
+
+    def verify_secret_password(self, password: str) -> bool:
+        """입력한 비밀번호가 비밀 일기장 비밀번호와 일치하는지 확인합니다."""
+        return self._password_store.verify_password(password)
 
     def set_secret_password(self, password: str) -> None:
         """비밀 일기장 비밀번호를 최초 1회 설정합니다."""

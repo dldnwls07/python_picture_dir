@@ -106,6 +106,9 @@ class AppGUI(tk.Tk):
         self._canvas_dirty = False
         self._existing_image_path = ""
         self._remove_existing_image = False
+        self._secret_mode = False
+        self._secret_color_job = None
+        self._secret_color_state = {}
         # UI 위젯 초기화 및 배치
         self._init_ui()
         self._connect_events()
@@ -358,6 +361,15 @@ class AppGUI(tk.Tk):
         self.btn_monthly_stats.pack(side="right")
         style_flat_button(self.btn_monthly_stats, COLOR_SECONDARY)
 
+        # 비밀 일기장 진입/나가기 버튼 (위치는 임시 — PLAN.md 7번 UI 개편 때 정식 배치)
+        self.btn_secret_diary = tk.Button(btn_frame, text="🔒 비밀일기 찾기")
+        self.btn_secret_diary.pack(side="right", padx=(10, 0))
+        style_flat_button(self.btn_secret_diary, COLOR_AI, font_size=9)
+
+        self.btn_exit_secret = tk.Button(btn_frame, text="🚪 나가기")
+        style_flat_button(self.btn_exit_secret, COLOR_DANGER, font_size=9)
+        # 처음엔 숨김 상태 — 비밀 일기장 모드에 들어갔을 때만 pack()으로 표시
+
         # ────────────────────────────────────────────────────────
         # STATUS BAR: 상태 표시줄
         # ────────────────────────────────────────────────────────
@@ -382,6 +394,8 @@ class AppGUI(tk.Tk):
         self.btn_delete.configure(command=self._on_delete_clicked)
         self.btn_mindmap.configure(command=self.show_mindmap_window)
         self.btn_monthly_stats.configure(command=self.show_monthly_stats_window)
+        self.btn_secret_diary.configure(command=self._on_open_secret_diary_clicked)
+        self.btn_exit_secret.configure(command=self._exit_secret_mode)
 
         # 리스트박스 선택 및 필터 콤보박스 바인드
         self.diary_listbox.bind("<<ListboxSelect>>", self._on_diary_selected)
@@ -389,6 +403,117 @@ class AppGUI(tk.Tk):
         
         # 윈도우 크기 변경 시 캔버스 이미지 초기화용
         self.canvas.bind("<Configure>", self._init_draw_image_if_needed)
+
+    # ── 비밀 일기장 모드 ────────────────────────────────────
+
+    def _on_open_secret_diary_clicked(self):
+        """'비밀일기 찾기' 버튼 클릭: 비밀번호 확인 후 비밀 일기장 모드로 전환한다."""
+        if not self._diary_service.has_secret_password():
+            self.display_alert("아직 설정된 비밀 일기가 없습니다.")
+            return
+
+        pwd = simpledialog.askstring(
+            "🔒 비밀 일기장",
+            "비밀번호를 입력해주세요:",
+            show="*"
+        )
+        if pwd is None:
+            return
+        if not self._diary_service.verify_secret_password(pwd):
+            self.display_alert("비밀번호가 올바르지 않습니다.")
+            return
+
+        self._enter_secret_mode()
+
+    def _enter_secret_mode(self):
+        """비밀 일기장 모드로 전환: 목록을 숨겨진 일기로 바꾸고, 편집을 읽기 전용으로 잠그고, 색상 연출을 시작한다."""
+        self._secret_mode = True
+        self._on_new_clicked()
+        self.btn_secret_diary.pack_forget()
+        self.btn_exit_secret.pack(side="right", padx=(10, 0))
+        self.btn_new.configure(state="disabled")
+        self.btn_save.configure(state="disabled")
+        self._set_form_read_only(True)
+        self._load_diary_list()
+        self._start_secret_color_pulse()
+
+    def _exit_secret_mode(self):
+        """'나가기' 버튼 클릭: 일반 목록/테마로 복귀한다."""
+        self._secret_mode = False
+        self._stop_secret_color_pulse()
+        self.btn_exit_secret.pack_forget()
+        self.btn_secret_diary.pack(side="right", padx=(10, 0))
+        self.btn_new.configure(state="normal")
+        self.btn_save.configure(state="normal")
+        self._set_form_read_only(False)
+        self._on_new_clicked()
+        self._load_diary_list()
+
+    def _set_form_read_only(self, read_only: bool):
+        """비밀 일기장 모드에서는 선택한 일기를 읽기 전용으로만 보여준다 (삭제는 계속 허용)."""
+        entry_state = "disabled" if read_only else "normal"
+        combo_state = "disabled" if read_only else "readonly"
+        self.date_entry.configure(state=entry_state)
+        self.title_entry.configure(state=entry_state)
+        self.location_entry.configure(state=entry_state)
+        self.actual_weather_combo.configure(state=combo_state)
+        self.actual_weather_combo2.configure(state=combo_state)
+        self.emotion_combo.configure(state=combo_state)
+        self.emotion_combo2.configure(state=combo_state)
+        self.hide_check.configure(state=entry_state)
+        self.content_text.configure(state=entry_state)
+
+    def _start_secret_color_pulse(self):
+        """불안한 느낌을 주기 위해 좌우 패널 배경색이 두 색 사이를 천천히 왕복하는 연출을 시작한다."""
+        if self._secret_color_job is not None:
+            return
+        self._secret_color_state = {"step": 0, "direction": 1, "total_steps": 40}
+        self._tick_secret_color_pulse()
+
+    def _tick_secret_color_pulse(self):
+        state = self._secret_color_state
+        t = state["step"] / state["total_steps"]
+        color = self._interpolate_color("#2a0a12", "#120a2a", t)
+        style = ttk.Style(self)
+        style.configure("TFrame", background=color)
+
+        state["step"] += state["direction"]
+        if state["step"] >= state["total_steps"]:
+            state["step"] = state["total_steps"]
+            state["direction"] = -1
+        elif state["step"] <= 0:
+            state["step"] = 0
+            state["direction"] = 1
+
+        self._secret_color_job = self.after(150, self._tick_secret_color_pulse)
+
+    def _stop_secret_color_pulse(self):
+        if self._secret_color_job is not None:
+            self.after_cancel(self._secret_color_job)
+            self._secret_color_job = None
+        style = ttk.Style(self)
+        style.configure("TFrame", background=COLOR_BG)
+
+    def _interpolate_color(self, hex1: str, hex2: str, t: float) -> str:
+        """0~1 사이 t 비율로 두 hex 색상을 보간한다."""
+        c1 = self.winfo_rgb(hex1)
+        c2 = self.winfo_rgb(hex2)
+        r = int(c1[0] + (c2[0] - c1[0]) * t) >> 8
+        g = int(c1[1] + (c2[1] - c1[1]) * t) >> 8
+        b = int(c1[2] + (c2[2] - c1[2]) * t) >> 8
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def _play_tear_effect(self, on_finished=None):
+        """Qt의 지그재그 찢기 연출 대신, 가벼운 대체 연출(이모지 플래시)을 재생한다."""
+        overlay = tk.Label(self, text="📄💨", font=("Segoe UI Emoji", 64), bg=COLOR_BG)
+        overlay.place(relx=0.5, rely=0.5, anchor="center")
+
+        def _remove():
+            overlay.destroy()
+            if on_finished:
+                on_finished()
+
+        self.after(700, _remove)
 
     # ── 비즈니스 로직 및 이벤트 핸들러 ───────────────────────
 
@@ -398,7 +523,10 @@ class AppGUI(tk.Tk):
         self._list_diary_ids.clear()
 
         filter_val = self.filter_var.get()
-        diaries = self._diary_service.get_all_diaries(filter_value=filter_val)
+        if self._secret_mode:
+            diaries = self._diary_service.get_hidden_diaries(filter_value=filter_val)
+        else:
+            diaries = self._diary_service.get_all_diaries(filter_value=filter_val)
         # 최신 날짜 순으로 정렬
         diaries.sort(key=lambda x: x.date, reverse=True)
 
@@ -416,6 +544,8 @@ class AppGUI(tk.Tk):
 
         if not self._list_diary_ids and filter_val != "전체보기":
             self.statusbar.config(text=f"선택한 필터 '{filter_val}'에 해당하는 일기가 없습니다.", fg=COLOR_TEXT_SUB)
+        elif filter_val == "전체보기" and self._secret_mode:
+            self.statusbar.config(text="🔒 비밀 일기장 — 읽기 전용입니다. 나가려면 '나가기'를 눌러주세요.", fg=COLOR_TEXT_SUB)
 
     def _on_diary_selected(self, event=None):
         """리스트 항목 선택 시 상세 데이터 렌더링."""
@@ -478,9 +608,14 @@ class AppGUI(tk.Tk):
             else:
                 self.emotion_var2.set("선택안함")
             
-            # Text 위젯 클리어 후 텍스트 세팅
+            # Text 위젯 클리어 후 텍스트 세팅 (읽기 전용 상태에서도 프로그램적으로는 갱신되도록 임시 활성화)
+            was_read_only = str(self.content_text.cget("state")) == "disabled"
+            if was_read_only:
+                self.content_text.configure(state="normal")
             self.content_text.delete("1.0", tk.END)
             self.content_text.insert(tk.END, diary.content)
+            if was_read_only:
+                self.content_text.configure(state="disabled")
 
             # 이미지 세팅
             self._existing_image_path = ""
@@ -521,6 +656,8 @@ class AppGUI(tk.Tk):
 
     def on_save_clicked(self):
         """'저장' 버튼 클릭: 일기를 저장하고 이어서 AI 한 줄 요약/공감/그림분석을 진행한다."""
+        if self._secret_mode:
+            return
         date_str = self.date_var.get().strip()
         title = self.title_var.get().strip()
         content = self.content_text.get("1.0", tk.END).strip()
@@ -575,7 +712,15 @@ class AppGUI(tk.Tk):
             remove_image=remove_existing_image,
         )
 
-        self._run_save_and_analyze(save_kwargs, image_base64, w_val1, w_val2)
+        if is_hidden_val:
+            # 비밀 일기는 저장/AI 처리를 시작하기 전에 먼저 찢는 연출을 보여준다
+            def _after_tear():
+                self._on_new_clicked()
+                self._run_save_and_analyze(save_kwargs, image_base64, w_val1, w_val2)
+
+            self._play_tear_effect(on_finished=_after_tear)
+        else:
+            self._run_save_and_analyze(save_kwargs, image_base64, w_val1, w_val2)
 
     def _on_delete_clicked(self):
         """선택된 일기 삭제."""
@@ -646,6 +791,8 @@ class AppGUI(tk.Tk):
             self._draw_tool = ImageDraw.Draw(self._draw_image)
 
     def _paint(self, event):
+        if self._secret_mode:
+            return
         self._init_draw_image_if_needed()
         x, y = event.x, event.y
         if self._last_x is not None and self._last_y is not None:
@@ -877,9 +1024,6 @@ class AppGUI(tk.Tk):
                 if new_summary != (diary.summary or ""):
                     self._diary_service.update_summary(diary.id, new_summary)
                     self._load_diary_list()
-                if diary.is_hidden:
-                    # 비밀 일기는 목록에서 완전히 제외되므로 편집 폼을 초기화한다
-                    self._on_new_clicked()
             dialog.destroy()
 
         # 확인 버튼
@@ -955,34 +1099,40 @@ class AppGUI(tk.Tk):
         def _on_save_success(diary):
             saved_diary_holder["diary"] = diary
             summary_var.set(diary.summary or "")
-            self._current_diary_id = diary.id
-            if save_kwargs.get("image_data"):
-                self._existing_image_path = diary.image_path
-                self._remove_existing_image = False
-                self._canvas_dirty = False
-            elif save_kwargs.get("remove_image"):
-                self._existing_image_path = ""
-                self._remove_existing_image = False
 
-            self._update_weather_ui({
-                "weather_emoji": diary.weather.emoji,
-                "emotion_label": diary.emotion_label,
-                "score": int(diary.emotion_score.value),
-                "actual_weather": diary.weather.actual_weather,
-                "actual_weather_text": diary.weather.actual_weather_text,
-                "location_name": diary.weather.location,
-            })
-            self._load_diary_list()
+            if diary.is_hidden:
+                # 찢기 연출과 함께 편집 폼이 이미 초기화됐으므로, 메인 화면에 내용을 다시 반영하지 않는다
+                self._load_diary_list()
+                self.statusbar.config(text="✅ 비밀 일기가 저장되었습니다.", fg=COLOR_SUCCESS)
+            else:
+                self._current_diary_id = diary.id
+                if save_kwargs.get("image_data"):
+                    self._existing_image_path = diary.image_path
+                    self._remove_existing_image = False
+                    self._canvas_dirty = False
+                elif save_kwargs.get("remove_image"):
+                    self._existing_image_path = ""
+                    self._remove_existing_image = False
 
-            action = "수정" if save_kwargs.get("diary_id") is not None else "저장"
-            actual_weather_value = f"{w_val1}, {w_val2}" if w_val2 and w_val2 != "선택안함" else w_val1
-            self.statusbar.config(
-                text=f"✅ 일기가 {action}되었습니다! 감정: {diary.emotion_label} | 현재 날씨: {actual_weather_value}",
-                fg=COLOR_SUCCESS
-            )
-            # 신규 작성(비밀 일기 제외)의 경우 바로 새 일기 모드로 전환
-            if action == "저장" and not diary.is_hidden:
-                self._on_new_clicked()
+                self._update_weather_ui({
+                    "weather_emoji": diary.weather.emoji,
+                    "emotion_label": diary.emotion_label,
+                    "score": int(diary.emotion_score.value),
+                    "actual_weather": diary.weather.actual_weather,
+                    "actual_weather_text": diary.weather.actual_weather_text,
+                    "location_name": diary.weather.location,
+                })
+                self._load_diary_list()
+
+                action = "수정" if save_kwargs.get("diary_id") is not None else "저장"
+                actual_weather_value = f"{w_val1}, {w_val2}" if w_val2 and w_val2 != "선택안함" else w_val1
+                self.statusbar.config(
+                    text=f"✅ 일기가 {action}되었습니다! 감정: {diary.emotion_label} | 현재 날씨: {actual_weather_value}",
+                    fg=COLOR_SUCCESS
+                )
+                # 신규 작성의 경우 바로 새 일기 모드로 전환
+                if action == "저장":
+                    self._on_new_clicked()
 
             if dialog.winfo_exists():
                 status_var.set("🤖 AI가 조언 중입니다...\n잠시만 기다려주세요. ✨")

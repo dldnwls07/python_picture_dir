@@ -25,3 +25,11 @@ class SecretPasswordStore:
         os.makedirs(os.path.dirname(self._filepath), exist_ok=True)
         with open(self._filepath, "w", encoding="utf-8") as f:
             f.write(password.strip())
+
+    def verify_password(self, password: str) -> bool:
+        """입력받은 비밀번호가 저장된 값과 일치하는지 확인한다."""
+        if not os.path.exists(self._filepath):
+            return False
+        with open(self._filepath, "r", encoding="utf-8") as f:
+            stored = f.read().strip()
+        return bool(stored) and stored == (password or "").strip()

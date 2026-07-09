@@ -15,28 +15,46 @@
 없는 데이터 셋 ex(롯데월드)를 입력한다면 미리 제공된 데이터셋에 사용자가 입력한(롯데월드)를 추가함
 
 **검토**
-- 지금 위치는 `locationLineEdit`(자유 입력 `QLineEdit`) 하나뿐이고, 날씨/감정처럼 `domain/model/value_objects.py`에 정의된 프리셋 리스트가 없음. 날씨(`MANUAL_WEATHER_OPTIONS`)·감정(`MANUAL_EMOTION_OPTIONS`)과 동일한 구조로 `MANUAL_LOCATION_OPTIONS` 같은 상수를 추가하는 건 어렵지 않음.
-- 다만 "사용자가 입력하면 프리셋에 추가"는 **영구 저장이 필요한 사용자별 데이터**라서, 코드에 박아넣는 상수(`value_objects.py`)만으로는 부족함 — 앱을 재시작해도 "롯데월드"가 남아있어야 한다면 별도 저장소(예: `data/locations.json` 같은 작은 설정 파일, 혹은 CSV에 이미 등장한 `location_name` 값들을 매번 스캔해서 프리셋에 합치는 방식)가 필요. 어떤 저장 방식을 쓸지 결정 필요.
-- 콤보박스(선택) + 자유 입력(신규 추가)을 동시에 지원하려면 PyQt의 `QComboBox(editable=True)` 같은 위젯으로 바꾸는 게 자연스러움 — 날씨/감정 콤보박스와 UI 패턴이 달라짐(그쪽은 편집 불가 고정 리스트).
+- 지금 위치는 `locationLineEdit`(자유 입력 `QLineEdit`) 하나뿐이고, 날씨/감정처럼 `domain/model/value_objects.py`에 정의된 프리셋 리스트가 없음. 날씨(`MANUAL_WEATHER_OPTIONS`)·감정(`MANUAL_EMOTION_OPTIONS`)과 동일한 구조로 `MANUAL_LOCATION_OPTIONS` 같은 기본 상수(학교/직장/집)를 두고, 여기에 사용자가 추가한 값을 합쳐서 보여주는 구조로 감.
+
+**확정된 사항 (2026-07-09 결정)**
+
+- **3-1 저장 위치 — ✅ 결정**: 사용자가 추가한 위치 프리셋은 `data/location.txt`에 저장. `SecretPasswordStore`(`data/password.txt`, 평문 텍스트)와 같은 패턴으로, 한 줄에 위치 이름 하나씩 저장하는 단순 텍스트 파일 형식이 자연스러움 — `infrastructure/persistence/`에 `LocationPresetStore` 같은 클래스를 하나 추가해 `get_all()`(기본 프리셋 + 파일에 저장된 값 합침, 중복 제거) / `add(name)`(신규 입력 시 파일에 추가) 형태로 구현하면 `SecretPasswordStore`와 동일한 구조를 재사용할 수 있음.
+  - `.gitignore`에도 `data/password.txt`와 같이 `data/location.txt`를 추가해야 함(사용자별 데이터라 저장소에 커밋되면 안 됨).
+- **3-2 위젯 — ✅ 결정**: `locationLineEdit`(고정 `QLineEdit`)를 `QComboBox(editable=True)`로 교체. 드롭다운에는 `LocationPresetStore.get_all()` 결과(기본 3개 + 사용자 추가분)를 채우고, 목록에 없는 값을 직접 입력하면 저장 시점에 `LocationPresetStore.add()`로 새 프리셋에 편입시킴. 날씨/감정 콤보박스(`actual_weather_combo` 등, 편집 불가 고정 리스트)와는 다른 패턴이 되므로 UI 코드상 구분해서 처리 필요.
+  - Tkinter 쪽은 `ttk.Combobox`가 `state="normal"`이면 편집 가능한 콤보박스로 동작하므로 동일한 패턴으로 구현 가능(PyQt와 별도 구현 필요하지만 개념은 동일).
+
+- **3-3 최초 실행 초기화 — ✅ 결정**: 앱 최초 실행 시 `data/location.txt`가 없으면 **빈 파일로 시작하지 않고, 기본 3개(학교/직장/집)를 파일에도 미리 써 둠**. `LocationPresetStore` 초기화 시(파일 부재 감지 시) 기본 프리셋으로 파일을 새로 생성하는 로직을 넣으면 됨 — `SecretPasswordStore.__init__`이 `data/` 디렉터리를 `os.makedirs(exist_ok=True)`로 미리 만들어두는 것과 같은 자리에서 처리 가능.
 
 ## 5. 필터링하는 기능의 함수 만들기.
 작성한 일기들을 필터링하는 여러 곳에서 사용할것이기 때문에 일기를 필터링하는 기능을 제작하기
 사용자의 위치, 날씨, 감정, 제목, 일기에서 사용된 단어, 1줄 요약에서 사용된 단어, 일기를 작성한 기간을 기반으로 필터링하는 기능을 강화.
 
 **검토**
-- 지금 필터링은 `Diary.matches_filter(filter_value: str)` 하나뿐이고, **단일 값**(날씨 이모지 1개 또는 "긍정/중립/부정 일기" 중 하나)만 받는 구조. 여기에 위치, 제목, 본문 키워드, 요약 키워드, 기간까지 **여러 조건을 동시에(AND 조합으로) 적용**하려면 함수 시그니처를 문자열 하나가 아니라 필터 조건 객체/딕셔너리(예: `location=`, `weather=`, `emotion=`, `title_contains=`, `content_keyword=`, `summary_keyword=`, `date_from=`, `date_to=`)로 바꾸는 설계 변경이 필요함. 기존 `matches_filter(filter_value)` 호출부(`DiaryService.get_all_diaries`, `app_gui.py`/`app_tkinter.py`의 `filterComboBox`)를 전부 이 새 시그니처에 맞게 고쳐야 함.
+- 지금 필터링은 `Diary.matches_filter(filter_value: str)` 하나뿐이고, **단일 값**(날씨 이모지 1개 또는 "긍정/중립/부정 일기" 중 하나)만 받는 구조. 여기에 위치, 제목, 본문 키워드, 요약 키워드, 기간까지 **여러 조건을 동시에(AND 조합으로) 적용**하려면 함수 시그니처를 문자열 하나가 아니라 필터 조건 객체/딕셔너리(예: `location=`, `weather=`, `emotion=`, `title_contains=`, `content_keyword=`, `summary_keyword=`, `date_from=`, `date_to=`)로 바꾸는 설계 변경이 필요함.
 - "일기에서 사용된 단어" 필터는 `engine/text_processor.py`의 전처리(`TextProcessor.process`) 결과를 재사용하면 자연스러움 — 이미 키워드 분석에서 쓰는 파이프라인과 동일.
 - "1줄 요약에서 사용된 단어" 필터는 이제 `summary` 컬럼이 CSV에 저장되고 있으니(1번 항목 구현 완료) 바로 만들 수 있음.
-- 날짜 기간 필터는 이미 `CSVDiaryRepository.find_by_date_range`/`DiaryService.get_diaries_by_date_range`로 존재하니, 새 필터 함수 안에 통합하거나 나란히 두고 조합하면 됨.
+- 날짜 기간 필터는 이미 `CSVDiaryRepository.find_by_date_range`/`DiaryService.get_diaries_by_date_range`로 존재함.
+
+**확정된 사항 (2026-07-09 결정)**
+
+- **5-1 시그니처 변경 — ✅ 결정**: `matches_filter(filter_value: str)`를 조건 객체/딕셔너리를 받는 새 시그니처로 바꾸고, 기존 호출부(`DiaryService.get_all_diaries`, `app_gui.py`/`app_tkinter.py`의 `filterComboBox` 연결부)를 전부 새 시그니처에 맞게 고침 — 하위 호환용 래퍼는 두지 않고 호출부를 직접 갱신.
+- **5-2 단어 필터 재사용 — ✅ 결정**: 본문/요약 키워드 필터는 `TextProcessor.process` 파이프라인과 통일해서 구현 — 키워드 분석에서 쓰는 전처리 결과를 그대로 재사용하고, 필터용으로 별도 전처리 로직을 새로 만들지 않음.
+- **5-3 날짜 기간 필터 — ✅ 결정**: 새 필터 함수 안으로 통합하지 않고, 기존 `find_by_date_range`/`get_diaries_by_date_range`를 **나란히 두고 조합**하는 방식으로 감(새 필터 함수 결과와 기간 조건을 별도로 적용한 뒤 교집합을 취하는 형태).
 
 ## 6. 필터링함수 적용하기.
 기존에 필터링을 하던 "일기 목록 검색"
 "키워드 분석"에서 필터링함수를 통해서 진행할 수 있도록 하기
 
 **검토**
-- **사실 확인**: 지금 앱에는 "일기 목록 검색"이라 부를 만한 **자유 텍스트 검색창이 없음**. 왼쪽 목록 위에 있는 건 `filterComboBox` 하나뿐이고, 날씨 이모지/긍정·중립·부정 중 하나를 고르는 드롭다운이다(`app_gui.py`의 `filterComboBox`, `app_tkinter.py`도 동일 구조). 5번에서 만들 새 필터 함수를 여기 적용하려면, 위치/제목/키워드 조건을 입력받을 **새 UI 요소(검색창, 위치 선택 등)를 왼쪽 패널에 추가**하는 작업이 먼저 필요함 — "기존 검색 기능 교체"가 아니라 "새 검색 UI 신설 + 필터 함수 연결"에 더 가까움.
-- "키워드 분석"(`show_mindmap_window`/`_run_keyword_analysis`, `ui/keyword_dialog.ui`) 쪽도 현재는 **기간(시작일~종료일) 조건만** 있고 날씨/감정/위치 조건은 없음. 필터 함수를 여기 적용하려면 `keyword_dialog.ui`에도 필터 입력 위젯을 추가해야 함.
-- 즉 6번은 "기존 기능을 새 함수로 갈아끼우는" 리팩터링이 아니라, 두 화면(목록/키워드 분석) 모두에 **새 필터 UI를 추가하면서 5번 함수로 로직을 통일**하는 작업에 가까움 — 작업량을 그렇게 예상하고 잡는 게 좋을 듯.
+- **사실 확인**: 지금 앱에는 "일기 목록 검색"이라 부를 만한 **자유 텍스트 검색창이 없음**. 왼쪽 목록 위에 있는 건 `filterComboBox` 하나뿐이고, 날씨 이모지/긍정·중립·부정 중 하나를 고르는 드롭다운이다(`app_gui.py`의 `filterComboBox`, `app_tkinter.py`도 동일 구조).
+- "키워드 분석"(`show_mindmap_window`/`_run_keyword_analysis`, `ui/keyword_dialog.ui`) 쪽도 현재는 **기간(시작일~종료일) 조건만** 있고 날씨/감정/위치 조건은 없음.
+
+**확정된 사항 (2026-07-09 결정)**
+
+- **6-1 목록 화면 — ✅ 결정**: 5번에서 만들 새 필터 함수를 적용하려면, 위치/제목/키워드 조건을 입력받을 **새 UI 요소(검색창, 위치 선택 등)를 왼쪽 패널에 추가**하고 여기에 필터 함수를 연결하는 것이 맞음 — 기존 `filterComboBox`를 교체하는 게 아니라 새 요소를 신설.
+- **6-2 키워드 분석 화면 — ✅ 결정**: `keyword_dialog.ui`에도 (기간 조건 외에) 날씨/감정/위치 등을 입력받을 **새 요소를 만들어서** 5번 필터 함수에 연결.
+- **6-3 전체 방향 — ✅ 결정**: 6번은 "기존 기능을 새 함수로 갈아끼우는" 리팩터링이 아니라, 두 화면(목록/키워드 분석) 모두에 **새 필터 UI를 추가하면서 5번 함수로 로직을 통일**하는 작업이 맞음 — 작업량을 그렇게 예상하고 잡을 것.
 
 ## 7. UI를 대폭 수정하기
 7-1 오른쪽 패널과 하단 버튼을 통합하여 MAIN페이지를 제작한다.
@@ -92,7 +110,7 @@
 
 ## 확인이 필요한 질문 모음
 
-- (3번) 사용자가 추가한 위치 프리셋을 어디에(어떤 파일 형식으로) 영구 저장할지?
+- (3번) ~~사용자가 추가한 위치 프리셋을 어디에(어떤 파일 형식으로) 영구 저장할지?~~ — ✅ 결정: `data/location.txt`(3번 항목 검토 참고).
 - (7번) 목록에서 일기를 선택했을 때 "보기 전용 페이지"가 별도로 생기는 것인지, 지금처럼 같은 편집 폼을 재사용하는지?
 - (7번) 비밀 일기장 화면을 별도 창으로 만들지, 7번의 페이지 전환 구조 안에 넣을지?
 - (8번) 감정 그래프에 `emotion1`/`emotion2` 두 값을 어떻게 반영할지(평균/둘 다 표시), `is_hidden` 일기 포함 여부?

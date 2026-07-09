@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -24,6 +25,13 @@ class AppGuiTest(unittest.TestCase):
         self.repo = CSVDiaryRepository(os.path.join(self.temp_dir, "diary.csv"))
         self.password_store = SecretPasswordStore(os.path.join(self.temp_dir, "password.txt"))
         self.window._diary_service = DiaryService(repository=self.repo, password_store=self.password_store)
+
+    def _wait_for_save_worker(self, timeout: float = 3.0):
+        """비밀 일기는 찢기 연출이 끝난 뒤에야 _save_worker가 생기므로, 그때까지 이벤트 루프를 돌려준다."""
+        deadline = time.time() + timeout
+        while not hasattr(self.window, "_save_worker") and time.time() < deadline:
+            QApplication.processEvents()
+        self.assertTrue(hasattr(self.window, "_save_worker"), "찢기 연출 완료 후 _save_worker가 생성되지 않았습니다.")
 
     def test_tabs_and_filter_exist(self):
         self.assertIsNotNone(self.window.drawingCanvas)
@@ -96,6 +104,7 @@ class AppGuiTest(unittest.TestCase):
             self.window.contentEdit.setPlainText("비밀 일기 내용")
             self.window.hideCheckBox.setChecked(True)
             self.window.on_save_clicked()
+            self._wait_for_save_worker()
             self.window._save_worker.wait()
         QApplication.processEvents()
 

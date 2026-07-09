@@ -9,10 +9,13 @@ from PyQt5.QtWidgets import (
     QMainWindow, QDialog, QMessageBox, QListWidgetItem,
     QLabel, QComboBox, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QTableWidgetItem, QHeaderView, QScrollArea,
-    QCheckBox, QInputDialog,
+    QCheckBox, QInputDialog, QGraphicsOpacityEffect,
 )
-from PyQt5.QtCore import QDate, Qt, QThread, pyqtSignal, QEvent
-from PyQt5.QtGui import QPixmap, QColor, QPainter, QPen, QImage
+from PyQt5.QtCore import (
+    QDate, Qt, QThread, pyqtSignal, QEvent, QVariantAnimation, QPropertyAnimation,
+    QParallelAnimationGroup, QEasingCurve, QAbstractAnimation, QRect,
+)
+from PyQt5.QtGui import QPixmap, QColor, QPainter, QPen, QImage, QPainterPath
 from PyQt5 import uic
 
 # 프로젝트 루트를 sys.path에 추가
@@ -190,6 +193,9 @@ class AppGUI(QMainWindow):
         self._existing_image_path = ""
         self._remove_existing_image = False
         self._hovered_diary_item = None
+        self._secret_mode = False
+        self._secret_color_anim = None
+        self._tear_animation_group = None
         # UI 초기화
         self._init_ui()
         self._connect_events()
@@ -302,6 +308,14 @@ class AppGUI(QMainWindow):
         self.rightLayout.setStretchFactor(draw_layout, 3)
         self.rightLayout.setStretchFactor(text_layout, 2)
 
+        # 비밀 일기장 진입/나가기 버튼 (위치는 임시 — PLAN.md 7번 UI 개편 때 정식 배치)
+        self.secretDiaryButton = QPushButton("🔒 비밀일기 찾기")
+        self.buttonLayout.addWidget(self.secretDiaryButton)
+
+        self.exitSecretModeButton = QPushButton("🚪 나가기")
+        self.exitSecretModeButton.setVisible(False)
+        self.buttonLayout.addWidget(self.exitSecretModeButton)
+
         # QComboBox 스타일을 다크 모드에 맞게 전역 추가 (QTabWidget 스타일 제거)
         extra_style = """
         QComboBox {
@@ -345,6 +359,8 @@ class AppGUI(QMainWindow):
         self.deleteButton.clicked.connect(self._on_delete_clicked)
         self.mindmapButton.clicked.connect(self.show_mindmap_window)
         self.newButton.clicked.connect(self._on_new_clicked)
+        self.secretDiaryButton.clicked.connect(self._on_open_secret_diary_clicked)
+        self.exitSecretModeButton.clicked.connect(self._exit_secret_mode)
         self.diaryListWidget.currentItemChanged.connect(self._on_diary_selected)
         self.filterComboBox.currentTextChanged.connect(self._load_diary_list)
         self.colorComboBox.currentTextChanged.connect(self.drawingCanvas.set_pen_color)
@@ -379,10 +395,216 @@ class AppGUI(QMainWindow):
                 self._hovered_diary_item.setText(preview_text)
             self._hovered_diary_item = None
 
+    # ── 비밀 일기장 모드 ────────────────────────────────────────
+
+    def _on_open_secret_diary_clicked(self):
+        """'비밀일기 찾기' 버튼 클릭: 비밀번호 확인 후 비밀 일기장 모드로 전환한다."""
+        if not self._diary_service.has_secret_password():
+            self.display_alert("아직 설정된 비밀 일기가 없습니다.")
+            return
+
+        pwd, ok = QInputDialog.getText(
+            self, "🔒 비밀 일기장",
+            "비밀번호를 입력해주세요:",
+            QLineEdit.Password
+        )
+        if not ok:
+            return
+        if not self._diary_service.verify_secret_password(pwd):
+            self.display_alert("비밀번호가 올바르지 않습니다.")
+            return
+
+        self._enter_secret_mode()
+
+    def _enter_secret_mode(self):
+        """비밀 일기장 모드로 전환: 목록을 숨겨진 일기로 바꾸고, 편집을 읽기 전용으로 잠그고, 색상 연출을 시작한다."""
+        self._secret_mode = True
+        self._on_new_clicked()
+        self.secretDiaryButton.setVisible(False)
+        self.exitSecretModeButton.setVisible(True)
+        self.newButton.setEnabled(False)
+        self.saveButton.setEnabled(False)
+        self._set_form_read_only(True)
+        self._load_diary_list()
+        self._start_secret_color_animation()
+
+    def _exit_secret_mode(self):
+        """'나가기' 버튼 클릭: 일반 목록/테마로 복귀한다."""
+        self._secret_mode = False
+        self._stop_secret_color_animation()
+        self.secretDiaryButton.setVisible(True)
+        self.exitSecretModeButton.setVisible(False)
+        self.newButton.setEnabled(True)
+        self.saveButton.setEnabled(True)
+        self._set_form_read_only(False)
+        self._on_new_clicked()
+        self._load_diary_list()
+
+    def _set_form_read_only(self, read_only: bool):
+        """비밀 일기장 모드에서는 선택한 일기를 읽기 전용으로만 보여준다 (삭제는 계속 허용)."""
+        editable = not read_only
+        self.titleEdit.setEnabled(editable)
+        self.contentEdit.setEnabled(editable)
+        self.locationLineEdit.setEnabled(editable)
+        self.actualWeatherComboBox.setEnabled(editable)
+        self.actualWeatherComboBox2.setEnabled(editable)
+        self.emotionComboBox.setEnabled(editable)
+        self.emotionComboBox2.setEnabled(editable)
+        self.dateEdit.setEnabled(editable)
+        self.hideCheckBox.setEnabled(editable)
+        self.drawingCanvas.setEnabled(editable)
+
+    def _start_secret_color_animation(self):
+        """불안한 느낌을 주기 위해 배경색이 두 색 사이를 천천히 왕복하는 연출을 시작한다."""
+        if self._secret_color_anim is not None:
+            return
+        anim = QVariantAnimation(self)
+        anim.setStartValue(QColor("#2a0a12"))
+        anim.setEndValue(QColor("#120a2a"))
+        anim.setDuration(6000)
+        anim.setEasingCurve(QEasingCurve.InOutSine)
+        anim.valueChanged.connect(self._on_secret_color_changed)
+        anim.finished.connect(self._flip_secret_color_direction)
+        self._secret_color_anim = anim
+        anim.start()
+
+    def _on_secret_color_changed(self, color: QColor):
+        hex_color = color.name()
+        self.leftPanel.setStyleSheet(f"background-color: {hex_color};")
+        self.rightPanel.setStyleSheet(f"background-color: {hex_color};")
+
+    def _flip_secret_color_direction(self):
+        anim = self._secret_color_anim
+        if anim is None:
+            return
+        anim.setDirection(
+            QAbstractAnimation.Backward if anim.direction() == QAbstractAnimation.Forward
+            else QAbstractAnimation.Forward
+        )
+        anim.start()
+
+    def _stop_secret_color_animation(self):
+        if self._secret_color_anim is not None:
+            self._secret_color_anim.finished.disconnect(self._flip_secret_color_direction)
+            self._secret_color_anim.stop()
+            self._secret_color_anim = None
+        self.leftPanel.setStyleSheet("")
+        self.rightPanel.setStyleSheet("")
+
+    def _split_pixmap_zigzag(self, pixmap: QPixmap):
+        """스냅샷 이미지를 지그재그 선을 기준으로 위/아래 두 조각으로 나눈다."""
+        width = pixmap.width()
+        height = pixmap.height()
+        mid = height / 2
+        amplitude = 12
+        step = 24
+
+        top_path = QPainterPath()
+        top_path.moveTo(0, 0)
+        top_path.lineTo(width, 0)
+        top_path.lineTo(width, mid)
+        x = width
+        up = True
+        while x > 0:
+            next_x = max(x - step, 0)
+            y = mid - amplitude if up else mid + amplitude
+            top_path.lineTo(next_x, y)
+            x = next_x
+            up = not up
+        top_path.lineTo(0, mid)
+        top_path.closeSubpath()
+
+        top_pixmap = QPixmap(pixmap.size())
+        top_pixmap.fill(Qt.transparent)
+        painter = QPainter(top_pixmap)
+        painter.setClipPath(top_path)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.end()
+
+        full_path = QPainterPath()
+        full_path.addRect(0, 0, width, height)
+        bottom_path = full_path.subtracted(top_path)
+
+        bottom_pixmap = QPixmap(pixmap.size())
+        bottom_pixmap.fill(Qt.transparent)
+        painter = QPainter(bottom_pixmap)
+        painter.setClipPath(bottom_path)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.end()
+
+        return top_pixmap, bottom_pixmap
+
+    def _play_tear_animation(self, on_finished=None):
+        """편집 폼을 지그재그로 찢어 반대 방향으로 날아가며 사라지는 연출을 재생한다."""
+        widget = self.rightPanel
+        parent = widget.parentWidget()
+        pixmap = widget.grab()
+        top_pixmap, bottom_pixmap = self._split_pixmap_zigzag(pixmap)
+        geom = widget.geometry()
+        duration = 650
+
+        top_label = QLabel(parent)
+        top_label.setPixmap(top_pixmap)
+        top_label.setGeometry(geom)
+        top_label.show()
+        top_label.raise_()
+
+        bottom_label = QLabel(parent)
+        bottom_label.setPixmap(bottom_pixmap)
+        bottom_label.setGeometry(geom)
+        bottom_label.show()
+        bottom_label.raise_()
+
+        top_opacity = QGraphicsOpacityEffect(top_label)
+        top_label.setGraphicsEffect(top_opacity)
+        bottom_opacity = QGraphicsOpacityEffect(bottom_label)
+        bottom_label.setGraphicsEffect(bottom_opacity)
+
+        top_move = QPropertyAnimation(top_label, b"geometry", self)
+        top_move.setDuration(duration)
+        top_move.setStartValue(geom)
+        top_move.setEndValue(QRect(geom.x() - 50, geom.y() - 90, geom.width(), geom.height()))
+        top_move.setEasingCurve(QEasingCurve.InQuad)
+
+        top_fade = QPropertyAnimation(top_opacity, b"opacity", self)
+        top_fade.setDuration(duration)
+        top_fade.setStartValue(1.0)
+        top_fade.setEndValue(0.0)
+
+        bottom_move = QPropertyAnimation(bottom_label, b"geometry", self)
+        bottom_move.setDuration(duration)
+        bottom_move.setStartValue(geom)
+        bottom_move.setEndValue(QRect(geom.x() + 50, geom.y() + 90, geom.width(), geom.height()))
+        bottom_move.setEasingCurve(QEasingCurve.InQuad)
+
+        bottom_fade = QPropertyAnimation(bottom_opacity, b"opacity", self)
+        bottom_fade.setDuration(duration)
+        bottom_fade.setStartValue(1.0)
+        bottom_fade.setEndValue(0.0)
+
+        group = QParallelAnimationGroup(self)
+        group.addAnimation(top_move)
+        group.addAnimation(top_fade)
+        group.addAnimation(bottom_move)
+        group.addAnimation(bottom_fade)
+
+        def _cleanup():
+            top_label.deleteLater()
+            bottom_label.deleteLater()
+            self._tear_animation_group = None
+            if on_finished:
+                on_finished()
+
+        group.finished.connect(_cleanup)
+        self._tear_animation_group = group
+        group.start()
+
     # ── 이벤트 핸들러 ────────────────────────────────────────────
 
     def on_save_clicked(self):
         """'저장' 버튼 클릭: 일기를 저장하고 이어서 AI 한 줄 요약/공감/그림분석을 진행한다."""
+        if self._secret_mode:
+            return
         date_str = self.dateEdit.date().toString("yyyy-MM-dd")
         title = self.titleEdit.text().strip()
         content = self.contentEdit.toPlainText().strip()
@@ -445,7 +667,15 @@ class AppGUI(QMainWindow):
             remove_image=remove_existing_image,
         )
 
-        self._run_save_and_analyze(save_kwargs, image_base64, w_val1, w_val2)
+        if is_hidden_val:
+            # 비밀 일기는 저장/AI 처리를 시작하기 전에 먼저 찢는 연출을 보여준다
+            def _after_tear():
+                self._on_new_clicked()
+                self._run_save_and_analyze(save_kwargs, image_base64, w_val1, w_val2)
+
+            self._play_tear_animation(on_finished=_after_tear)
+        else:
+            self._run_save_and_analyze(save_kwargs, image_base64, w_val1, w_val2)
 
     def _on_delete_clicked(self):
         """'삭제' 버튼 클릭: 선택된 일기를 삭제한다."""
@@ -584,12 +814,18 @@ class AppGUI(QMainWindow):
         self.scoreLabel.setText(f"감정 상태: {result['emotion_label']} ({result['score']}점)")
 
     def _load_diary_list(self):
-        """CSV에서 일기 목록을 읽어 왼쪽 리스트에 표시한다 (비밀 일기는 제외됨)."""
+        """CSV에서 일기 목록을 읽어 왼쪽 리스트에 표시한다.
+
+        평소에는 비밀 일기를 제외한 목록을, 비밀 일기장 모드에서는 반대로 숨겨진 일기만 보여준다.
+        """
         self._reset_hovered_diary_item()
         self.diaryListWidget.clear()
         filter_value = self.filterComboBox.currentText() if hasattr(self, "filterComboBox") else "전체보기"
 
-        diaries = self._diary_service.get_all_diaries(filter_value=filter_value)
+        if self._secret_mode:
+            diaries = self._diary_service.get_hidden_diaries(filter_value=filter_value)
+        else:
+            diaries = self._diary_service.get_all_diaries(filter_value=filter_value)
         # 최신순 정렬
         diaries.sort(key=lambda x: x.date, reverse=True)
 
@@ -618,7 +854,10 @@ class AppGUI(QMainWindow):
                 f"선택한 필터 '{filter_value}'에 해당하는 일기가 없습니다."
             )
         elif filter_value == "전체보기":
-            self._set_status_message("환영합니다! 오늘의 일기를 작성해 보세요. 📝")
+            if self._secret_mode:
+                self._set_status_message("🔒 비밀 일기장 — 읽기 전용입니다. 나가려면 '나가기'를 눌러주세요.")
+            else:
+                self._set_status_message("환영합니다! 오늘의 일기를 작성해 보세요. 📝")
 
     def _set_status_message(self, base_message: str):
         """기본 상태 메시지를 표시한다."""
@@ -773,27 +1012,32 @@ class AppGUI(QMainWindow):
             action = "수정" if save_kwargs.get("diary_id") is not None else "저장"
             if success and diary:
                 saved_diary_holder["diary"] = diary
-                self._current_diary_id = diary.id
-                if save_kwargs.get("image_data"):
-                    self._existing_image_path = diary.image_path
-                    self._remove_existing_image = False
-                elif save_kwargs.get("remove_image"):
-                    self._existing_image_path = ""
-                    self._remove_existing_image = False
+                if diary.is_hidden:
+                    # 찢기 연출과 함께 편집 폼이 이미 초기화됐으므로, 메인 화면에 내용을 다시 반영하지 않는다
+                    self._load_diary_list()
+                    self._set_status_message("✅ 비밀 일기가 저장되었습니다.")
+                else:
+                    self._current_diary_id = diary.id
+                    if save_kwargs.get("image_data"):
+                        self._existing_image_path = diary.image_path
+                        self._remove_existing_image = False
+                    elif save_kwargs.get("remove_image"):
+                        self._existing_image_path = ""
+                        self._remove_existing_image = False
 
-                self.update_weather_icon({
-                    "weather_emoji": diary.weather.emoji,
-                    "emotion_label": diary.emotion_label,
-                    "score": int(diary.emotion_score.value),
-                    "actual_weather": diary.weather.actual_weather,
-                    "actual_weather_text": diary.weather.actual_weather_text,
-                    "location_name": diary.weather.location,
-                })
-                self._load_diary_list()
-                actual_weather_value = f"{w_val1}, {w_val2}" if w_val2 and w_val2 != "선택안함" else w_val1
-                self._set_status_message(
-                    f"✅ 일기가 {action}되었습니다! 감정: {diary.emotion_label} | 현재 날씨: {actual_weather_value}"
-                )
+                    self.update_weather_icon({
+                        "weather_emoji": diary.weather.emoji,
+                        "emotion_label": diary.emotion_label,
+                        "score": int(diary.emotion_score.value),
+                        "actual_weather": diary.weather.actual_weather,
+                        "actual_weather_text": diary.weather.actual_weather_text,
+                        "location_name": diary.weather.location,
+                    })
+                    self._load_diary_list()
+                    actual_weather_value = f"{w_val1}, {w_val2}" if w_val2 and w_val2 != "선택안함" else w_val1
+                    self._set_status_message(
+                        f"✅ 일기가 {action}되었습니다! 감정: {diary.emotion_label} | 현재 날씨: {actual_weather_value}"
+                    )
                 summary_edit.setText(diary.summary or "")
             else:
                 if not dialog.isVisible():
@@ -844,9 +1088,6 @@ class AppGUI(QMainWindow):
                 if new_summary != (diary.summary or ""):
                     self._diary_service.update_summary(diary.id, new_summary)
                     self._load_diary_list()
-                if diary.is_hidden:
-                    # 비밀 일기는 목록에서 완전히 제외되므로 편집 폼을 초기화한다
-                    self._on_new_clicked()
             dialog.accept()
 
         ok_button.clicked.connect(_on_confirm_clicked)

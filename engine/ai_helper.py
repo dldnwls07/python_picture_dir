@@ -12,7 +12,7 @@ class AIHelper:
     def __init__(self):
         # 환경 변수에서 API 키 로드
         self.api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-        self.model = "gemini-2.5-flash"
+        self.model = "gemini-3.5-flash"
         self.endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent"
 
     def _ensure_api_key(self) -> None:
@@ -52,7 +52,7 @@ class AIHelper:
 
         # 중복 없는 모델 목록 생성
         models_to_try = []
-        for m in [self.model, "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash"]:
+        for m in [self.model, "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"]:
             if m not in models_to_try:
                 models_to_try.append(m)
         last_error = None
