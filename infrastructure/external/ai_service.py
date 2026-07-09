@@ -6,7 +6,23 @@ class AIService:
     def __init__(self):
         self._helper = AIHelper()
 
-    def analyze_diary(
+    def summarize(
+        self,
+        date: str,
+        content: str,
+        location: str = "",
+        weather: str = "",
+        emotion: str = "",
+    ) -> str:
+        return self._helper.summarize_diary(
+            date=date,
+            content=content,
+            location=location,
+            weather=weather,
+            emotion=emotion,
+        )
+
+    def analyze_empathy(
         self,
         date: str,
         content: str,
@@ -15,7 +31,7 @@ class AIService:
         emotion: str = "",
         image_base64: str = ""
     ) -> dict:
-        return self._helper.analyze_diary(
+        return self._helper.analyze_empathy(
             date=date,
             content=content,
             location=location,

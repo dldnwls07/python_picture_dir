@@ -8,6 +8,7 @@ from domain.model.value_objects import (
 )
 from domain.repository.diary_repository import DiaryRepository
 from infrastructure.persistence.csv_diary_repository import CSVDiaryRepository
+from infrastructure.persistence.secret_password_store import SecretPasswordStore
 from infrastructure.external.ai_service import AIService
 from engine.text_processor import TextProcessor
 from engine.keyword_analyzer import KeywordAnalyzer
@@ -20,28 +21,39 @@ class DiaryService:
         self,
         repository: Optional[DiaryRepository] = None,
         ai_service: Optional[AIService] = None,
+        password_store: Optional[SecretPasswordStore] = None,
     ):
         self._repository = repository or CSVDiaryRepository()
         self._ai_service = ai_service or AIService()
+        self._password_store = password_store or SecretPasswordStore()
         self._text_processor = TextProcessor()
         self._keyword_analyzer = KeywordAnalyzer()
 
     def get_all_diaries(self, filter_value: str = "전체보기") -> List[Diary]:
-        """모든 일기를 조회하며 필터 조건에 부합하는 일기 목록을 반환합니다."""
+        """모든 일기를 조회하며 필터 조건에 부합하는 일기 목록을 반환합니다 (비밀 일기 제외)."""
         diaries = self._repository.find_all()
-        return [d for d in diaries if d.matches_filter(filter_value)]
+        return [d for d in diaries if not d.is_hidden and d.matches_filter(filter_value)]
 
     def get_diary_by_id(self, diary_id: int) -> Optional[Diary]:
         """ID로 특정 일기를 조회합니다."""
         return self._repository.find_by_id(diary_id)
 
     def get_diaries_by_date_range(self, start: str, end: str) -> List[Diary]:
-        """특정 기간 동안의 일기를 조회합니다."""
-        return self._repository.find_by_date_range(start, end)
+        """특정 기간 동안의 일기를 조회합니다 (비밀 일기 제외)."""
+        diaries = self._repository.find_by_date_range(start, end)
+        return [d for d in diaries if not d.is_hidden]
 
     def delete_diary(self, diary_id: int) -> bool:
         """ID로 특정 일기를 삭제합니다."""
         return self._repository.delete_by_id(diary_id)
+
+    def has_secret_password(self) -> bool:
+        """비밀 일기장 비밀번호가 이미 설정되어 있는지 확인합니다."""
+        return self._password_store.has_password()
+
+    def set_secret_password(self, password: str) -> None:
+        """비밀 일기장 비밀번호를 최초 1회 설정합니다."""
+        self._password_store.set_password(password)
 
     def save_diary(
         self,
@@ -55,12 +67,10 @@ class DiaryService:
         emotion1: str,
         emotion2: str,
         is_hidden: bool,
-        password: str,
         image_data = None,  # PIL Image
         remove_image: bool = False,
     ) -> Tuple[bool, Optional[Diary]]:
         """일기를 등록하거나 수정합니다 (트랜잭션 복구 로직 강화)."""
-        import hashlib
         new_saved_image_path = None
         image_to_delete_on_success = None
 
@@ -107,19 +117,7 @@ class DiaryService:
                 actual_weather_text=actual_weather_text
             )
 
-            # 3. 비밀번호 해싱 처리 (신규 비밀번호인 경우만)
-            password_to_save = password
-            if password:
-                is_already_hashed = (
-                    len(password) == 64
-                    and all(c in "0123456789abcdef" for c in password.lower())
-                )
-                if not is_already_hashed:
-                    password_to_save = hashlib.sha256(
-                        password.strip().encode("utf-8")
-                    ).hexdigest()
-
-            # 4. 이미지 처리 설계 변경 (즉시 삭제하지 않고 지연 처리)
+            # 3. 이미지 처리 설계 변경 (즉시 삭제하지 않고 지연 처리)
             image_path = ""
             existing_image_path = ""
             created_at = None
@@ -143,6 +141,19 @@ class DiaryService:
                 if existing_image_path:
                     image_to_delete_on_success = existing_image_path
 
+            # 4. AI 한 줄 요약 생성 (실패해도 저장은 계속 진행 — 빈 값으로 대체)
+            try:
+                summary = self.generate_summary(
+                    date=date,
+                    content=content,
+                    location=location_name,
+                    weather=actual_weather_text,
+                    emotion=emotion_label,
+                )
+            except Exception as e:
+                print(f"AI 요약 생성 실패, 빈 값으로 대체합니다: {e}")
+                summary = ""
+
             # 5. 엔티티 인스턴스 생성
             diary = Diary(
                 diary_id=diary_id,
@@ -155,7 +166,7 @@ class DiaryService:
                 image_path=image_path,
                 created_at=created_at,
                 is_hidden=is_hidden,
-                password=password_to_save
+                summary=summary
             )
 
             # 6. CSV 저장소 저장 시도
@@ -185,11 +196,19 @@ class DiaryService:
                     pass
             return False, None
 
+    def update_summary(self, diary_id: int, summary: str) -> bool:
+        """사용자가 수정한 1줄 요약을 기존 일기에 반영합니다."""
+        diary = self._repository.find_by_id(diary_id)
+        if not diary:
+            return False
+        diary.summary = summary
+        return self._repository.save(diary)
+
     def analyze_keywords(self, diaries: List[Diary], wordcloud_width: int = 380, wordcloud_height: int = 280) -> Tuple[List[Tuple[str, int]], bytes]:
         """주어진 일기 목록의 텍스트에서 상위 키워드와 워드클라우드 바이트 데이터를 생성합니다."""
         if not diaries:
             return [], b""
-        
+
         all_content = " ".join(d.content for d in diaries)
         words = self._text_processor.process(all_content)
         if not words:
@@ -204,7 +223,24 @@ class DiaryService:
         all_content = " ".join(d.content for d in diaries)
         return self._text_processor.process(all_content)
 
-    def analyze_ai(
+    def generate_summary(
+        self,
+        date: str,
+        content: str,
+        location: str = "",
+        weather: str = "",
+        emotion: str = "",
+    ) -> str:
+        """AI로 일기 본문의 1줄 요약을 생성합니다."""
+        return self._ai_service.summarize(
+            date=date,
+            content=content,
+            location=location,
+            weather=weather,
+            emotion=emotion,
+        )
+
+    def analyze_empathy(
         self,
         date: str,
         content: str,
@@ -213,8 +249,8 @@ class DiaryService:
         emotion: str = "",
         image_base64: str = ""
     ) -> dict:
-        """AI 일기 감정 분석 및 공감을 수행합니다."""
-        return self._ai_service.analyze_diary(
+        """AI 공감 멘트와 그림 분석을 수행합니다."""
+        return self._ai_service.analyze_empathy(
             date=date,
             content=content,
             location=location,

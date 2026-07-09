@@ -18,6 +18,7 @@ class CSVDiaryRepository(DiaryRepository):
         "content",
         "score",
         "emotion_label",
+        "emotion_tier",
         "weather",
         "actual_weather",
         "actual_weather_text",
@@ -26,7 +27,7 @@ class CSVDiaryRepository(DiaryRepository):
         "image_path",
         "created_at",
         "is_hidden",
-        "password",
+        "summary",
     ]
 
     def __init__(self, filepath: Optional[str] = None):
@@ -131,7 +132,7 @@ class CSVDiaryRepository(DiaryRepository):
             image_path=row.get("image_path", ""),
             created_at=row.get("created_at", ""),
             is_hidden=row.get("is_hidden", "False") == "True",
-            password=row.get("password", "")
+            summary=row.get("summary", "")
         )
 
     def _entity_to_row(self, diary: Diary) -> dict:
@@ -142,6 +143,7 @@ class CSVDiaryRepository(DiaryRepository):
             "content": diary.content,
             "score": str(diary.emotion_score.value),
             "emotion_label": diary.emotion_label,
+            "emotion_tier": diary.emotion_score.tier,
             "weather": diary.weather.emoji,
             "actual_weather": diary.weather.actual_weather,
             "actual_weather_text": diary.weather.actual_weather_text,
@@ -150,7 +152,7 @@ class CSVDiaryRepository(DiaryRepository):
             "image_path": diary.image_path,
             "created_at": diary.created_at,
             "is_hidden": str(diary.is_hidden),
-            "password": diary.password,
+            "summary": diary.summary,
         }
 
     def save(self, diary: Diary) -> bool:

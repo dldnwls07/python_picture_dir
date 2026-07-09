@@ -32,6 +32,7 @@ from diary_categories import (
     DEFAULT_EMOTION,
     MANUAL_EMOTION_OPTIONS,
     MANUAL_WEATHER_OPTIONS,
+    truncate_summary,
 )
 from application.service.diary_service import DiaryService
 
@@ -357,10 +358,6 @@ class AppGUI(tk.Tk):
         self.btn_monthly_stats.pack(side="right")
         style_flat_button(self.btn_monthly_stats, COLOR_SECONDARY)
 
-        self.btn_ai = tk.Button(btn_frame, text="🤖 AI 공감")
-        self.btn_ai.pack(side="right", padx=(0, 10))
-        style_flat_button(self.btn_ai, COLOR_AI)
-
         # ────────────────────────────────────────────────────────
         # STATUS BAR: 상태 표시줄
         # ────────────────────────────────────────────────────────
@@ -385,8 +382,7 @@ class AppGUI(tk.Tk):
         self.btn_delete.configure(command=self._on_delete_clicked)
         self.btn_mindmap.configure(command=self.show_mindmap_window)
         self.btn_monthly_stats.configure(command=self.show_monthly_stats_window)
-        self.btn_ai.configure(command=self.show_ai_empathy_window)
-        
+
         # 리스트박스 선택 및 필터 콤보박스 바인드
         self.diary_listbox.bind("<<ListboxSelect>>", self._on_diary_selected)
         self.filter_combo.bind("<<ComboboxSelected>>", lambda e: self._load_diary_list())
@@ -411,12 +407,10 @@ class AppGUI(tk.Tk):
             title = diary.title or "제목 없음"
             weather = diary.weather.actual_weather or diary.weather.emoji
             diary_id = diary.id
-            is_hidden = diary.is_hidden
 
-            if is_hidden:
-                display_text = f" 🔒  숨겨진 일기 ({date_str})"
-            else:
-                display_text = f" {weather}  {date_str}  |  {title}"
+            display_text = f" {weather}  {date_str}  |  {title}"
+            if diary.summary:
+                display_text += f"  📝 {truncate_summary(diary.summary)}"
             self.diary_listbox.insert(tk.END, display_text)
             self._list_diary_ids.append(diary_id)
 
@@ -434,20 +428,6 @@ class AppGUI(tk.Tk):
 
         diary = self._diary_service.get_diary_by_id(diary_id)
         if diary:
-            # 🔒 비밀 일기 비밀번호 검증
-            if diary.is_hidden:
-                pwd = simpledialog.askstring(
-                    "🔒 비밀 일기 해제",
-                    "이 일기는 숨겨져 있습니다.\n설정하신 비밀번호를 입력해주세요:",
-                    show="*"
-                )
-                if not diary.verify_password(pwd):
-                    messagebox.showwarning("오류", "비밀번호가 올바르지 않습니다.")
-                    # 선택 해제
-                    self.diary_listbox.selection_clear(0, tk.END)
-                    self._on_new_clicked()
-                    return
-
             self._current_diary_id = diary_id
             self.date_var.set(diary.date)
             self.title_var.set(diary.title)
@@ -534,10 +514,13 @@ class AppGUI(tk.Tk):
 
             self.btn_delete.config(state="normal")
             self.btn_delete.configure(bg=COLOR_DANGER)
-            self.statusbar.config(text=f"📖 {diary.date} — {diary.title or ''}")
+            status_text = f"📖 {diary.date} — {diary.title or ''}"
+            if diary.summary:
+                status_text += f" · 📝 {diary.summary}"
+            self.statusbar.config(text=status_text)
 
     def on_save_clicked(self):
-        """'저장' 버튼 클릭: 사용자 입력 기반 메타데이터와 일기를 저장한다."""
+        """'저장' 버튼 클릭: 일기를 저장하고 이어서 AI 한 줄 요약/공감/그림분석을 진행한다."""
         date_str = self.date_var.get().strip()
         title = self.title_var.get().strip()
         content = self.content_text.get("1.0", tk.END).strip()
@@ -545,7 +528,7 @@ class AppGUI(tk.Tk):
         # 날씨 1, 2 처리
         w_val1 = self.actual_weather_var.get().strip()
         w_val2 = self.actual_weather_var2.get().strip()
-        
+
         # 감정 1, 2 처리
         e_label1 = self.emotion_var.get().strip()
         e_label2 = self.emotion_var2.get().strip()
@@ -559,33 +542,25 @@ class AppGUI(tk.Tk):
         if self._current_diary_id is not None and self._remove_existing_image:
             remove_existing_image = True
 
-        # 비밀 일기(숨기기) 및 비밀번호 처리
+        # 비밀 일기(숨기기): 전역 비밀번호를 최초 1회만 설정
         is_hidden_val = False
-        password_val = ""
         if self.hide_var.get():
             is_hidden_val = True
-            # 기존 저장되어 있던 비밀번호가 있는지 로드
-            existing_pwd = ""
-            if self._current_diary_id is not None:
-                existing_diary = self._diary_service.get_diary_by_id(self._current_diary_id)
-                if existing_diary:
-                    existing_pwd = existing_diary.password
-            password_val = existing_pwd
-            if not password_val:
+            if not self._diary_service.has_secret_password():
                 pwd = simpledialog.askstring(
                     "🔒 비밀번호 설정",
-                    "이 일기를 숨길 비밀번호를 설정해주세요:",
+                    "비밀 일기 기능을 사용하려면 비밀번호를 설정해주세요:",
                     show="*"
                 )
                 if pwd and pwd.strip():
-                    password_val = pwd.strip()
+                    self._diary_service.set_secret_password(pwd.strip())
                 else:
                     self.hide_var.set(False)
                     is_hidden_val = False
-                    password_val = ""
 
-        # 4. 서비스 호출하여 일기 등록/수정
-        success, diary = self._diary_service.save_diary(
+        image_base64 = self._get_image_base64()
+
+        save_kwargs = dict(
             diary_id=self._current_diary_id,
             date=date_str,
             title=title,
@@ -596,41 +571,11 @@ class AppGUI(tk.Tk):
             emotion1=e_label1,
             emotion2=e_label2,
             is_hidden=is_hidden_val,
-            password=password_val,
             image_data=image_data,
-            remove_image=remove_existing_image
+            remove_image=remove_existing_image,
         )
 
-        action = "수정" if self._current_diary_id is not None else "저장"
-
-        if success and diary:
-            if image_data:
-                self._existing_image_path = diary.image_path
-                self._remove_existing_image = False
-                self._canvas_dirty = False
-            elif remove_existing_image:
-                self._existing_image_path = ""
-                self._remove_existing_image = False
-                
-            self._update_weather_ui({
-                "weather_emoji": diary.weather.emoji,
-                "emotion_label": diary.emotion_label,
-                "score": int(diary.emotion_score.value),
-                "actual_weather": diary.weather.actual_weather,
-                "actual_weather_text": diary.weather.actual_weather_text,
-                "location_name": diary.weather.location,
-            })
-            self._load_diary_list()
-            
-            # 성공 상태 표시
-            actual_weather_value = f"{w_val1}, {w_val2}" if w_val2 and w_val2 != "선택안함" else w_val1
-            msg = f"✅ 일기가 {action}되었습니다! 감정: {diary.emotion_label} | 현재 날씨: {actual_weather_value}"
-            self.statusbar.config(text=msg, fg=COLOR_SUCCESS)
-            # 신규 작성 후 수정모드로 진입하기 위해 최신 데이터 로드
-            if action == "저장":
-                self._on_new_clicked()
-        else:
-            self.display_alert(f"일기 {action}에 실패했습니다. (데이터 임시 유실 방지 로직 실행됨)")
+        self._run_save_and_analyze(save_kwargs, image_base64, w_val1, w_val2)
 
     def _on_delete_clicked(self):
         """선택된 일기 삭제."""
@@ -865,14 +810,33 @@ class AppGUI(tk.Tk):
         btn_analyze.config(command=run_analysis)
         run_analysis()
 
-    def show_ai_empathy_window(self):
-        """AI의 일기 요약 및 따뜻한 공감 멘트를 표시하는 창을 연다."""
-        import threading
+    def _get_image_base64(self) -> str:
+        """캔버스/기존 이미지에서 Base64 인코딩된 그림 데이터를 추출한다."""
+        has_drawing = bool(self._existing_image_path) or self._is_canvas_modified()
+        if not has_drawing:
+            return ""
 
-        content = self.content_text.get("1.0", tk.END).strip()
-        if not content:
-            self.display_alert("공감할 일기 내용이 없습니다. 내용을 먼저 입력해주세요!")
-            return
+        import base64
+        if self._existing_image_path and not self._is_canvas_modified() and os.path.exists(self._existing_image_path):
+            try:
+                with open(self._existing_image_path, "rb") as image_file:
+                    return base64.b64encode(image_file.read()).decode("utf-8")
+            except Exception as e:
+                print(f"디스크에서 이미지 읽기 실패: {e}")
+                return ""
+        elif self._draw_image:
+            try:
+                buffered = BytesIO()
+                self._draw_image.save(buffered, format="PNG")
+                img_bytes = buffered.getvalue()
+                return base64.b64encode(img_bytes).decode("utf-8")
+            except Exception as e:
+                print(f"PIL 이미지 Base64 변환 실패: {e}")
+        return ""
+
+    def _run_save_and_analyze(self, save_kwargs: dict, image_base64: str, w_val1: str, w_val2: str):
+        """저장 → AI 한 줄 요약 → AI 공감/그림분석을 한 다이얼로그 안에서 순서대로 보여준다."""
+        import threading
 
         dialog = tk.Toplevel(self)
         dialog.title("🤖 AI 공감 일기 도우미")
@@ -893,7 +857,7 @@ class AppGUI(tk.Tk):
         )
         title_label.pack(anchor="w", pady=(0, 15))
 
-        status_var = tk.StringVar(value="AI가 일기를 읽고 공감하는 중입니다...\n잠시만 기다려주세요. ✨")
+        status_var = tk.StringVar(value="💾 일기를 저장하는 중입니다...\n잠시만 기다려주세요.")
         status_label = ttk.Label(
             container,
             textvariable=status_var,
@@ -903,91 +867,61 @@ class AppGUI(tk.Tk):
         )
         status_label.pack(fill="both", expand=True, pady=20)
 
+        saved_diary_holder = {}
+        summary_var = tk.StringVar(value="")
+
+        def _on_confirm():
+            diary = saved_diary_holder.get("diary")
+            if diary is not None:
+                new_summary = summary_var.get().strip()
+                if new_summary != (diary.summary or ""):
+                    self._diary_service.update_summary(diary.id, new_summary)
+                    self._load_diary_list()
+                if diary.is_hidden:
+                    # 비밀 일기는 목록에서 완전히 제외되므로 편집 폼을 초기화한다
+                    self._on_new_clicked()
+            dialog.destroy()
+
         # 확인 버튼
-        ok_button = tk.Button(container, text="확인", command=dialog.destroy)
+        ok_button = tk.Button(container, text="확인", command=_on_confirm)
         style_flat_button(ok_button, COLOR_PRIMARY)
         ok_button.pack(side="bottom", anchor="center", pady=(15, 0))
         ok_button.configure(state="disabled")
 
-        # 그림이 존재하는지 체크 및 Base64 추출
-        image_base64 = ""
-        has_drawing = bool(self._existing_image_path) or self._is_canvas_modified()
-        if has_drawing:
-            import base64
-            if self._existing_image_path and not self._is_canvas_modified() and os.path.exists(self._existing_image_path):
-                try:
-                    with open(self._existing_image_path, "rb") as image_file:
-                        image_base64 = base64.b64encode(image_file.read()).decode("utf-8")
-                except Exception as e:
-                    print(f"디스크에서 이미지 읽기 실패: {e}")
-            elif self._draw_image:
-                try:
-                    from io import BytesIO
-                    buffered = BytesIO()
-                    self._draw_image.save(buffered, format="PNG")
-                    img_bytes = buffered.getvalue()
-                    image_base64 = base64.b64encode(img_bytes).decode("utf-8")
-                except Exception as e:
-                    print(f"PIL 이미지 Base64 변환 실패: {e}")
-
-        date_str = self.date_var.get().strip()
-        location = self.location_var.get().strip()
-        # 날씨 1, 2 결합
-        w1 = self.actual_weather_var.get().strip()
-        w2 = self.actual_weather_var2.get().strip()
-        weather = f"{w1}, {w2}" if w2 and w2 != "선택안함" else w1
-
-        # 감정 1, 2 결합
-        e1 = self.emotion_var.get().strip()
-        e2 = self.emotion_var2.get().strip()
-        emotion = f"{e1}, {e2}" if e2 and e2 != "선택안함" else e1
-
-        def _on_result(result):
-            """AI 결과를 GUI 메인 스레드에서 안전하게 렌더링."""
+        def _show_results(result):
+            """AI 공감/그림분석 결과를 GUI 메인 스레드에서 안전하게 렌더링."""
             if not dialog.winfo_exists():
                 return
 
-            # 로딩 라벨 제거
             status_label.pack_forget()
 
-            # 요약 섹션
-            summary_frame = ttk.LabelFrame(container, text="📝 1줄 요약", padding=10)
+            # 요약 섹션 (수정 가능)
+            summary_frame = ttk.LabelFrame(container, text="📝 AI 한 줄 요약 (수정 가능)", padding=10)
             summary_frame.pack(fill="x", pady=(0, 15))
-
-            summary_text = ttk.Label(
-                summary_frame,
-                text=result["summary"],
-                wraplength=420,
-                justify="left",
-                font=("Malgun Gothic", 10)
-            )
-            summary_text.pack(fill="x", expand=True)
+            summary_entry = ttk.Entry(summary_frame, textvariable=summary_var, font=("Malgun Gothic", 10))
+            summary_entry.pack(fill="x", expand=True)
 
             # 공감 섹션
             empathy_frame = ttk.LabelFrame(container, text="💖 AI의 공감과 한마디", padding=10)
             empathy_frame.pack(fill="x", pady=(0, 15))
-
-            empathy_text = ttk.Label(
+            ttk.Label(
                 empathy_frame,
-                text=result["empathy"],
+                text=result.get("empathy", ""),
                 wraplength=420,
                 justify="left",
                 font=("Malgun Gothic", 10)
-            )
-            empathy_text.pack(fill="x", expand=True)
+            ).pack(fill="x", expand=True)
 
             # 그림 분석 섹션
             drawing_frame = ttk.LabelFrame(container, text="🎨 그림 분석", padding=10)
             drawing_frame.pack(fill="x")
-
-            drawing_text = ttk.Label(
+            ttk.Label(
                 drawing_frame,
-                text=result["drawing_analysis"],
+                text=result.get("drawing_analysis", ""),
                 wraplength=420,
                 justify="left",
                 font=("Malgun Gothic", 10)
-            )
-            drawing_text.pack(fill="x", expand=True)
+            ).pack(fill="x", expand=True)
 
             ok_button.configure(state="normal")
 
@@ -1002,6 +936,7 @@ class AppGUI(tk.Tk):
             traceback.print_exc()
             if not dialog.winfo_exists():
                 return
+            status_label.pack(fill="both", expand=True, pady=20)
             status_var.set(f"❌ AI 분석에 실패했습니다:\n\n{str(exc)}")
             status_label.configure(foreground=COLOR_DANGER)
             ok_button.configure(state="normal")
@@ -1009,24 +944,79 @@ class AppGUI(tk.Tk):
             required_height = container.winfo_reqheight() + 50
             dialog.geometry(f"500x{required_height}")
 
-        def _worker():
-            """백그라운드 스레드: 블로킹 네트워크 요청 실행."""
-            try:
-                result = self._diary_service.analyze_ai(
-                    date=date_str,
-                    content=content,
-                    location=location,
-                    weather=weather,
-                    emotion=emotion,
-                    image_base64=image_base64
-                )
-                # 결과를 메인 스레드 이벤트 루프로 전달
-                self.after(0, lambda: _on_result(result))
-            except Exception as exc:
-                _captured_exc = exc  # except-as 블록 종료 시 exc가 자동 삭제되므로 즉시 저장
-                self.after(0, lambda e=_captured_exc: _on_error(e))
+        def _on_save_failed():
+            if not dialog.winfo_exists():
+                return
+            action = "수정" if save_kwargs.get("diary_id") is not None else "저장"
+            status_var.set(f"❌ 일기 {action}에 실패했습니다.")
+            status_label.configure(foreground=COLOR_DANGER)
+            ok_button.configure(state="normal")
 
-        # 백그라운드 스레드로 AI 분석 실행 (GUI 이벤트 루프 비차단)
+        def _on_save_success(diary):
+            saved_diary_holder["diary"] = diary
+            summary_var.set(diary.summary or "")
+            self._current_diary_id = diary.id
+            if save_kwargs.get("image_data"):
+                self._existing_image_path = diary.image_path
+                self._remove_existing_image = False
+                self._canvas_dirty = False
+            elif save_kwargs.get("remove_image"):
+                self._existing_image_path = ""
+                self._remove_existing_image = False
+
+            self._update_weather_ui({
+                "weather_emoji": diary.weather.emoji,
+                "emotion_label": diary.emotion_label,
+                "score": int(diary.emotion_score.value),
+                "actual_weather": diary.weather.actual_weather,
+                "actual_weather_text": diary.weather.actual_weather_text,
+                "location_name": diary.weather.location,
+            })
+            self._load_diary_list()
+
+            action = "수정" if save_kwargs.get("diary_id") is not None else "저장"
+            actual_weather_value = f"{w_val1}, {w_val2}" if w_val2 and w_val2 != "선택안함" else w_val1
+            self.statusbar.config(
+                text=f"✅ 일기가 {action}되었습니다! 감정: {diary.emotion_label} | 현재 날씨: {actual_weather_value}",
+                fg=COLOR_SUCCESS
+            )
+            # 신규 작성(비밀 일기 제외)의 경우 바로 새 일기 모드로 전환
+            if action == "저장" and not diary.is_hidden:
+                self._on_new_clicked()
+
+            if dialog.winfo_exists():
+                status_var.set("🤖 AI가 조언 중입니다...\n잠시만 기다려주세요. ✨")
+
+        def _worker():
+            """백그라운드 스레드: 저장(+요약 대기) → 공감/그림분석 순서로 실행."""
+            try:
+                success, diary = self._diary_service.save_diary(**save_kwargs)
+            except Exception as exc:
+                _captured = exc
+                self.after(0, lambda e=_captured: _on_error(e))
+                return
+
+            if success and diary:
+                self.after(0, lambda: _on_save_success(diary))
+            else:
+                self.after(0, _on_save_failed)
+                return
+
+            try:
+                result = self._diary_service.analyze_empathy(
+                    date=diary.date,
+                    content=diary.content,
+                    location=diary.weather.location,
+                    weather=diary.weather.actual_weather_text,
+                    emotion=diary.emotion_label,
+                    image_base64=image_base64,
+                )
+                self.after(0, lambda: _show_results(result))
+            except Exception as exc:
+                _captured = exc
+                self.after(0, lambda e=_captured: _on_error(e))
+
+        # 백그라운드 스레드로 저장 및 AI 분석 실행 (GUI 이벤트 루프 비차단)
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
 

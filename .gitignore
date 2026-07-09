@@ -20,6 +20,7 @@ pip-delete-this-directory.txt
 # Databases / Data
 data/diary_data.csv
 data/images/
+data/password.txt
 
 # UI generated files
 ui/*.py
