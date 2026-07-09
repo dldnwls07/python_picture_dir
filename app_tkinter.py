@@ -82,6 +82,105 @@ def style_flat_button(btn, bg, fg="white", font_size=10):
     btn.bind("<Leave>", lambda e: btn.configure(bg=bg))
 
 
+class EmotionCalendarFrame(ttk.Frame):
+    """날짜별 평균 감정 점수를 배경색 히트맵으로 보여주는 캘린더(7-11: tkcalendar 없이 직접 그리드로 구현)."""
+
+    def __init__(self, parent, on_date_click=None, **kwargs):
+        super().__init__(parent, style="TFrame", **kwargs)
+        self._on_date_click = on_date_click
+        self._scores_by_date = {}
+        today = datetime.now()
+        self._current_year = today.year
+        self._current_month = today.month
+
+        header = ttk.Frame(self, style="TFrame")
+        header.pack(fill="x", pady=(0, 8))
+
+        self._prev_btn = tk.Button(header, text="◀", command=self._go_prev_month)
+        self._prev_btn.pack(side="left")
+        style_flat_button(self._prev_btn, COLOR_SECONDARY, font_size=9)
+
+        self._month_label = ttk.Label(header, text="", style="Header.TLabel", anchor="center")
+        self._month_label.pack(side="left", expand=True, fill="x")
+
+        self._next_btn = tk.Button(header, text="▶", command=self._go_next_month)
+        self._next_btn.pack(side="right")
+        style_flat_button(self._next_btn, COLOR_SECONDARY, font_size=9)
+
+        weekday_row = ttk.Frame(self, style="TFrame")
+        weekday_row.pack(fill="x")
+        for i, name in enumerate(["월", "화", "수", "목", "금", "토", "일"]):
+            ttk.Label(weekday_row, text=name, style="TLabel", anchor="center").grid(row=0, column=i, sticky="nsew")
+            weekday_row.columnconfigure(i, weight=1)
+
+        self._grid_frame = ttk.Frame(self, style="TFrame")
+        self._grid_frame.pack(fill="both", expand=True)
+        for i in range(7):
+            self._grid_frame.columnconfigure(i, weight=1)
+
+        self._render_calendar()
+
+    def set_emotion_scores(self, scores_by_date: dict):
+        """{"yyyy-MM-dd": 평균 점수} 형태의 딕셔너리로 히트맵 데이터를 갱신한다."""
+        self._scores_by_date = scores_by_date
+        self._render_calendar()
+
+    def _go_prev_month(self):
+        self._current_month -= 1
+        if self._current_month < 1:
+            self._current_month = 12
+            self._current_year -= 1
+        self._render_calendar()
+
+    def _go_next_month(self):
+        self._current_month += 1
+        if self._current_month > 12:
+            self._current_month = 1
+            self._current_year += 1
+        self._render_calendar()
+
+    def _render_calendar(self):
+        for widget in self._grid_frame.winfo_children():
+            widget.destroy()
+
+        import calendar as calendar_module
+        self._month_label.config(text=f"{self._current_year}년 {self._current_month}월")
+
+        cal = calendar_module.Calendar(firstweekday=0)  # 월요일 시작
+        weeks = cal.monthdayscalendar(self._current_year, self._current_month)
+        for row_idx, week in enumerate(weeks):
+            self._grid_frame.rowconfigure(row_idx, weight=1)
+            for col_idx, day in enumerate(week):
+                if day == 0:
+                    cell = tk.Label(self._grid_frame, text="", bg=COLOR_BG)
+                else:
+                    date_str = f"{self._current_year:04d}-{self._current_month:02d}-{day:02d}"
+                    score = self._scores_by_date.get(date_str)
+                    bg = self._color_for_score(score) if score is not None else COLOR_CARD
+                    cell = tk.Label(
+                        self._grid_frame, text=str(day), bg=bg, fg=COLOR_TEXT_MAIN,
+                        font=("Malgun Gothic", 10), relief="flat", bd=1, cursor="hand2",
+                        width=4, height=2,
+                    )
+                    cell.bind("<Button-1>", lambda e, d=date_str: self._handle_click(d))
+                cell.grid(row=row_idx, column=col_idx, sticky="nsew", padx=1, pady=1)
+
+    def _handle_click(self, date_str):
+        if self._on_date_click:
+            self._on_date_click(date_str)
+
+    @staticmethod
+    def _color_for_score(score: float) -> str:
+        """점수(-5~5)를 차가운 색(부정)에서 따뜻한 색(긍정)으로 보간한다."""
+        ratio = (max(-5.0, min(5.0, score)) + 5.0) / 10.0
+        cold = (173, 189, 216)   # 차분한 블루그레이 (부정)
+        warm = (255, 183, 94)    # 따뜻한 주황 (긍정)
+        r = int(cold[0] + (warm[0] - cold[0]) * ratio)
+        g = int(cold[1] + (warm[1] - cold[1]) * ratio)
+        b = int(cold[2] + (warm[2] - cold[2]) * ratio)
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+
 class AppGUI(tk.Tk):
     """Tkinter 기반의 감정 일기장 메인 윈도우."""
 
@@ -116,6 +215,7 @@ class AppGUI(tk.Tk):
         self._connect_events()
         self._load_diary_list()
         self._on_new_clicked()
+        self._show_calendar_page()  # 앱은 항상 캘린더(MAIN) 페이지로 시작한다(7-2)
 
     def _init_ui(self):
         """메인 화면 레이아웃 구성."""
@@ -201,8 +301,15 @@ class AppGUI(tk.Tk):
         right_panel = ttk.Frame(self, style="TFrame", padding=15)
         right_panel.grid(row=0, column=1, sticky="nsew")
 
-        # 카드 프레임 (Editor Card)
-        editor_card = ttk.Frame(right_panel, style="Card.TFrame", padding=20)
+        # rightPanel 내부를 캘린더(MAIN)/일기 편집 두 페이지로 나누고, pack()/pack_forget()으로
+        # 서로 전환한다(7-2/7-3, Qt의 QStackedWidget과 동일한 역할).
+        self.calendar_page = ttk.Frame(right_panel, style="TFrame")
+        self.emotion_calendar = EmotionCalendarFrame(self.calendar_page, on_date_click=self._on_calendar_date_clicked)
+        self.emotion_calendar.pack(fill="both", expand=True, pady=(0, 12))
+
+        # 카드 프레임 (Editor Card) — 이 프레임 자체가 "편집 페이지"가 된다.
+        self.editor_page = ttk.Frame(right_panel, style="TFrame")
+        editor_card = ttk.Frame(self.editor_page, style="Card.TFrame", padding=20)
         editor_card.pack(fill="both", expand=True)
 
         # 날짜 및 제목 입력 레이아웃
@@ -246,6 +353,7 @@ class AppGUI(tk.Tk):
         )
         self.location_entry.grid(row=1, column=0, sticky="ew", padx=(0, 12), pady=(5, 0))
 
+        # 날씨는 하루에 하나만 고르면 충분해서 콤보박스 하나로 통합했다(7-9-2).
         self.actual_weather_var = tk.StringVar(value=MANUAL_WEATHER_OPTIONS[0])
         self.actual_weather_combo = ttk.Combobox(
             context_frame,
@@ -254,17 +362,7 @@ class AppGUI(tk.Tk):
             values=MANUAL_WEATHER_OPTIONS,
             font=("Malgun Gothic", 10),
         )
-        self.actual_weather_combo.grid(row=1, column=1, sticky="ew", padx=(0, 6), pady=(5, 0))
-
-        self.actual_weather_var2 = tk.StringVar(value="선택안함")
-        self.actual_weather_combo2 = ttk.Combobox(
-            context_frame,
-            textvariable=self.actual_weather_var2,
-            state="readonly",
-            values=["선택안함"] + list(MANUAL_WEATHER_OPTIONS),
-            font=("Malgun Gothic", 10),
-        )
-        self.actual_weather_combo2.grid(row=1, column=2, sticky="ew", padx=(0, 12), pady=(5, 0))
+        self.actual_weather_combo.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(0, 12), pady=(5, 0))
 
         self.emotion_var = tk.StringVar(value=DEFAULT_EMOTION)
         self.emotion_combo = ttk.Combobox(
@@ -369,8 +467,10 @@ class AppGUI(tk.Tk):
         btn_frame = ttk.Frame(editor_card, style="Card.TFrame")
         btn_frame.pack(fill="x")
 
-        self.btn_new = tk.Button(btn_frame, text="새 일기")
-        self.btn_new.pack(side="left", padx=(0, 10))
+        # "새 일기" 버튼은 편집 페이지가 아니라 캘린더 페이지 전용이다(7-10) — btn_frame에는
+        # 두지 않고 calendar_page에 붙인다.
+        self.btn_new = tk.Button(self.calendar_page, text="📝 새 일기")
+        self.btn_new.pack(fill="x")
         style_flat_button(self.btn_new, COLOR_SECONDARY)
 
         self.btn_save = tk.Button(btn_frame, text="일기 저장")
@@ -389,12 +489,22 @@ class AppGUI(tk.Tk):
         self.btn_monthly_stats.pack(side="right")
         style_flat_button(self.btn_monthly_stats, COLOR_SECONDARY)
 
-        # 비밀 일기장 진입/나가기 버튼 (위치는 임시 — PLAN.md 7번 UI 개편 때 정식 배치)
-        self.btn_secret_diary = tk.Button(btn_frame, text="🔒 비밀일기 찾기")
-        self.btn_secret_diary.pack(side="right", padx=(10, 0))
+        # 목록과 하단 내비게이션 버튼 그룹을 시각적으로 분리하는 얇은 구분선(7-7).
+        ttk.Separator(left_panel, orient="horizontal").pack(fill="x", pady=(8, 0))
+
+        # 캘린더 페이지에서 편집 페이지로 돌아가는 버튼 — 좌측 내비게이션은 항상 고정 표시이므로
+        # 여기 두면 어느 페이지에 있든 접근 가능하다.
+        self.btn_back_to_calendar = tk.Button(left_panel, text="🗓️ 캘린더로", command=self._show_calendar_page)
+        self.btn_back_to_calendar.pack(fill="x", pady=(8, 4))
+        style_flat_button(self.btn_back_to_calendar, COLOR_SECONDARY, font_size=9)
+
+        # 비밀 일기장 진입/나가기 버튼 — 캘린더/편집 페이지 전환과 무관하게 항상 접근 가능해야
+        # 하는 전역 모드 전환이므로, 우측 스택이 아니라 좌측 내비게이션에 둔다(7번 확정).
+        self.btn_secret_diary = tk.Button(left_panel, text="🔒 비밀일기 찾기")
+        self.btn_secret_diary.pack(fill="x", pady=(0, 4))
         style_flat_button(self.btn_secret_diary, COLOR_AI, font_size=9)
 
-        self.btn_exit_secret = tk.Button(btn_frame, text="🚪 나가기")
+        self.btn_exit_secret = tk.Button(left_panel, text="🚪 나가기")
         style_flat_button(self.btn_exit_secret, COLOR_DANGER, font_size=9)
         # 처음엔 숨김 상태 — 비밀 일기장 모드에 들어갔을 때만 pack()으로 표시
 
@@ -417,7 +527,7 @@ class AppGUI(tk.Tk):
 
     def _connect_events(self):
         """이벤트 연결."""
-        self.btn_new.configure(command=self._on_new_clicked)
+        self.btn_new.configure(command=self._on_new_diary_requested)
         self.btn_save.configure(command=self.on_save_clicked)
         self.btn_delete.configure(command=self._on_delete_clicked)
         self.btn_mindmap.configure(command=self.show_mindmap_window)
@@ -470,24 +580,26 @@ class AppGUI(tk.Tk):
         self._secret_mode = True
         self._on_new_clicked()
         self.btn_secret_diary.pack_forget()
-        self.btn_exit_secret.pack(side="right", padx=(10, 0))
+        self.btn_exit_secret.pack(fill="x", pady=(0, 4))
         self.btn_new.configure(state="disabled")
         self.btn_save.configure(state="disabled")
         self._set_form_read_only(True)
         self._load_diary_list()
         self._start_secret_color_pulse()
+        self._show_editor_page()
 
     def _exit_secret_mode(self):
         """'나가기' 버튼 클릭: 일반 목록/테마로 복귀한다."""
         self._secret_mode = False
         self._stop_secret_color_pulse()
         self.btn_exit_secret.pack_forget()
-        self.btn_secret_diary.pack(side="right", padx=(10, 0))
+        self.btn_secret_diary.pack(fill="x", pady=(0, 4))
         self.btn_new.configure(state="normal")
         self.btn_save.configure(state="normal")
         self._set_form_read_only(False)
         self._on_new_clicked()
         self._load_diary_list()
+        self._show_calendar_page()
 
     def _set_form_read_only(self, read_only: bool):
         """비밀 일기장 모드에서는 선택한 일기를 읽기 전용으로만 보여준다 (삭제는 계속 허용)."""
@@ -497,7 +609,6 @@ class AppGUI(tk.Tk):
         self.title_entry.configure(state=entry_state)
         self.location_entry.configure(state=entry_state)
         self.actual_weather_combo.configure(state=combo_state)
-        self.actual_weather_combo2.configure(state=combo_state)
         self.emotion_combo.configure(state=combo_state)
         self.emotion_combo2.configure(state=combo_state)
         self.hide_check.configure(state=entry_state)
@@ -650,6 +761,7 @@ class AppGUI(tk.Tk):
         """CSV에서 일기를 불러와 리스트박스 채우기 (카테고리·상세 필터링 포함)."""
         self.diary_listbox.delete(0, tk.END)
         self._list_diary_ids.clear()
+        self._refresh_calendar_scores()
 
         filter_val = self.filter_var.get()
         diary_filter = self._build_diary_filter()
@@ -704,101 +816,139 @@ class AppGUI(tk.Tk):
 
         diary = self._diary_service.get_diary_by_id(diary_id)
         if diary:
-            self._current_diary_id = diary_id
-            self.date_var.set(diary.date)
-            self.title_var.set(diary.title)
-            self.location_var.set(diary.weather.location)
-            saved_actual_weather = diary.weather.actual_weather
-            saved_actual_weather_text = diary.weather.actual_weather_text
-            
-            # 날씨 1, 2 로드
-            weathers_emoji = [w.strip() for w in saved_actual_weather.split(",") if w.strip()]
-            weathers_text = [w.strip() for w in saved_actual_weather_text.split(",") if w.strip()]
-            
-            def find_weather_label(emoji, text):
-                label = f"{emoji} {text}".strip()
-                for opt in MANUAL_WEATHER_OPTIONS:
-                    if opt.strip() == label:
-                        return opt
-                return None
-                
-            if len(weathers_emoji) >= 1:
-                lbl1 = find_weather_label(weathers_emoji[0], weathers_text[0] if len(weathers_text) >= 1 else "")
-                self.actual_weather_var.set(lbl1 or MANUAL_WEATHER_OPTIONS[0])
-            else:
-                self.actual_weather_var.set(MANUAL_WEATHER_OPTIONS[0])
-                
-            if len(weathers_emoji) >= 2:
-                lbl2 = find_weather_label(weathers_emoji[1], weathers_text[1] if len(weathers_text) >= 2 else "")
-                self.actual_weather_var2.set(lbl2 or "선택안함")
-            else:
-                self.actual_weather_var2.set("선택안함")
-                
-            # 감정 1, 2 로드
-            saved_emotion_label = diary.emotion_label or DEFAULT_EMOTION
-            emotions = [e.strip() for e in saved_emotion_label.split(",") if e.strip()]
-            
-            if len(emotions) >= 1:
-                if emotions[0] in MANUAL_EMOTION_OPTIONS:
-                    self.emotion_var.set(emotions[0])
-                else:
-                    self.emotion_var.set(DEFAULT_EMOTION)
+            self._load_diary_into_form(diary)
+
+    def _load_diary_into_form(self, diary):
+        """일기 엔티티를 편집 폼에 채우고 편집 페이지로 전환한다 (목록 선택/캘린더 날짜 클릭이 공유, 7-8)."""
+        self._current_diary_id = diary.id
+        self.date_var.set(diary.date)
+        self.title_var.set(diary.title)
+        self.location_var.set(diary.weather.location)
+        saved_actual_weather = diary.weather.actual_weather
+        saved_actual_weather_text = diary.weather.actual_weather_text
+
+        # 날씨 1, 2 로드
+        # 날씨 로드 (레거시 데이터에 콤마로 여러 날씨가 저장돼 있어도 첫 번째만 사용, 7-9-2)
+        weathers_emoji = [w.strip() for w in saved_actual_weather.split(",") if w.strip()]
+        weathers_text = [w.strip() for w in saved_actual_weather_text.split(",") if w.strip()]
+
+        def find_weather_label(emoji, text):
+            label = f"{emoji} {text}".strip()
+            for opt in MANUAL_WEATHER_OPTIONS:
+                if opt.strip() == label:
+                    return opt
+            return None
+
+        if len(weathers_emoji) >= 1:
+            lbl1 = find_weather_label(weathers_emoji[0], weathers_text[0] if len(weathers_text) >= 1 else "")
+            self.actual_weather_var.set(lbl1 or MANUAL_WEATHER_OPTIONS[0])
+        else:
+            self.actual_weather_var.set(MANUAL_WEATHER_OPTIONS[0])
+
+        # 감정 1, 2 로드
+        saved_emotion_label = diary.emotion_label or DEFAULT_EMOTION
+        emotions = [e.strip() for e in saved_emotion_label.split(",") if e.strip()]
+
+        if len(emotions) >= 1:
+            if emotions[0] in MANUAL_EMOTION_OPTIONS:
+                self.emotion_var.set(emotions[0])
             else:
                 self.emotion_var.set(DEFAULT_EMOTION)
-                
-            if len(emotions) >= 2:
-                if emotions[1] in MANUAL_EMOTION_OPTIONS:
-                    self.emotion_var2.set(emotions[1])
-                else:
-                    self.emotion_var2.set("선택안함")
+        else:
+            self.emotion_var.set(DEFAULT_EMOTION)
+
+        if len(emotions) >= 2:
+            if emotions[1] in MANUAL_EMOTION_OPTIONS:
+                self.emotion_var2.set(emotions[1])
             else:
                 self.emotion_var2.set("선택안함")
-            
-            # Text 위젯 클리어 후 텍스트 세팅 (읽기 전용 상태에서도 프로그램적으로는 갱신되도록 임시 활성화)
-            was_read_only = str(self.content_text.cget("state")) == "disabled"
-            if was_read_only:
-                self.content_text.configure(state="normal")
-            self.content_text.delete("1.0", tk.END)
-            self.content_text.insert(tk.END, diary.content)
-            if was_read_only:
-                self.content_text.configure(state="disabled")
+        else:
+            self.emotion_var2.set("선택안함")
 
-            # 이미지 세팅
-            self._existing_image_path = ""
-            self._remove_existing_image = False
-            self._clear_canvas(mark_removed=False)
-            img_path = diary.image_path
-            if img_path and os.path.exists(img_path):
-                try:
-                    loaded_img = Image.open(img_path)
-                    self.canvas_image_ref = ImageTk.PhotoImage(loaded_img)
-                    self.canvas.create_image(0, 0, anchor="nw", image=self.canvas_image_ref)
-                    self._draw_image = loaded_img.copy()
-                    self._draw_tool = ImageDraw.Draw(self._draw_image)
-                    self._existing_image_path = img_path
-                    self._remove_existing_image = False
-                    self._canvas_dirty = False
-                except Exception as e:
-                    print(f"이미지 로드 실패: {e}")
+        # Text 위젯 클리어 후 텍스트 세팅 (읽기 전용 상태에서도 프로그램적으로는 갱신되도록 임시 활성화)
+        was_read_only = str(self.content_text.cget("state")) == "disabled"
+        if was_read_only:
+            self.content_text.configure(state="normal")
+        self.content_text.delete("1.0", tk.END)
+        self.content_text.insert(tk.END, diary.content)
+        if was_read_only:
+            self.content_text.configure(state="disabled")
 
-            # 날씨 & 스코어 렌더링
-            weather = diary.weather.emoji
-            score = int(diary.emotion_score.value)
-            tier = diary.emotion_score.tier
-            self.weather_label.config(text=weather)
-            emotion_label = diary.emotion_label or DEFAULT_EMOTION
-            self.score_label.config(text=f"감정 상태: {emotion_label} ({score}점, 티어: {tier})")
-            self.hide_var.set(diary.is_hidden)
-            actual_weather_line = saved_actual_weather or "미입력"
-            location_line = diary.weather.location or "미입력"
-            self.detail_label.config(text=f"현재 날씨: {actual_weather_line}\n위치: {location_line}")
+        # 이미지 세팅
+        self._existing_image_path = ""
+        self._remove_existing_image = False
+        self._clear_canvas(mark_removed=False)
+        img_path = diary.image_path
+        if img_path and os.path.exists(img_path):
+            try:
+                loaded_img = Image.open(img_path)
+                self.canvas_image_ref = ImageTk.PhotoImage(loaded_img)
+                self.canvas.create_image(0, 0, anchor="nw", image=self.canvas_image_ref)
+                self._draw_image = loaded_img.copy()
+                self._draw_tool = ImageDraw.Draw(self._draw_image)
+                self._existing_image_path = img_path
+                self._remove_existing_image = False
+                self._canvas_dirty = False
+            except Exception as e:
+                print(f"이미지 로드 실패: {e}")
 
-            self.btn_delete.config(state="normal")
-            self.btn_delete.configure(bg=COLOR_DANGER)
-            status_text = f"📖 {diary.date} — {diary.title or ''}"
-            if diary.summary:
-                status_text += f" · 📝 {diary.summary}"
-            self.statusbar.config(text=status_text)
+        # 날씨 & 스코어 렌더링
+        weather = diary.weather.emoji
+        score = int(diary.emotion_score.value)
+        tier = diary.emotion_score.tier
+        self.weather_label.config(text=weather)
+        emotion_label = diary.emotion_label or DEFAULT_EMOTION
+        self.score_label.config(text=f"감정 상태: {emotion_label} ({score}점, 티어: {tier})")
+        self.hide_var.set(diary.is_hidden)
+        actual_weather_line = saved_actual_weather or "미입력"
+        location_line = diary.weather.location or "미입력"
+        self.detail_label.config(text=f"현재 날씨: {actual_weather_line}\n위치: {location_line}")
+
+        self.btn_delete.config(state="normal")
+        self.btn_delete.configure(bg=COLOR_DANGER)
+        status_text = f"📖 {diary.date} — {diary.title or ''}"
+        if diary.summary:
+            status_text += f" · 📝 {diary.summary}"
+        self.statusbar.config(text=status_text)
+        self._show_editor_page()
+
+    # ── 캘린더(MAIN) 페이지 ────────────────────────────────────
+
+    def _show_calendar_page(self):
+        """캘린더(MAIN) 페이지를 보여준다."""
+        self.editor_page.pack_forget()
+        self.calendar_page.pack(fill="both", expand=True)
+
+    def _show_editor_page(self):
+        """일기 편집 페이지를 보여준다."""
+        self.calendar_page.pack_forget()
+        self.editor_page.pack(fill="both", expand=True)
+
+    def _on_new_diary_requested(self):
+        """캘린더 페이지의 '새 일기' 버튼: 폼을 초기화하고 편집 페이지로 전환한다."""
+        self._on_new_clicked()
+        self._show_editor_page()
+
+    def _refresh_calendar_scores(self):
+        """감정 점수 히트맵 데이터를 다시 조회해 캘린더에 반영한다."""
+        self.emotion_calendar.set_emotion_scores(self._diary_service.get_emotion_scores_by_date())
+
+    def _on_calendar_date_clicked(self, date_str: str):
+        """캘린더에서 날짜를 클릭했을 때의 진입 동선을 처리한다(7-8).
+
+        빈 날짜 → 그 날짜로 새 일기 작성. 일기가 있는 날짜 → 목록에서 선택한 것과 동일하게 편집
+        페이지로 로드. 단, 그 일기가 비밀 일기면 선택 자체를 막고 안내만 띄운다.
+        """
+        diary = self._diary_service.find_diary_for_date(date_str)
+        if diary is None:
+            self._on_new_clicked()
+            self.date_var.set(date_str)
+            self._show_editor_page()
+            return
+        if diary.is_hidden:
+            self.display_alert("비밀 일기는 캘린더에서 선택할 수 없습니다.")
+            return
+        self._load_diary_into_form(diary)
 
     def on_save_clicked(self):
         """'저장' 버튼 클릭: 일기를 저장하고 이어서 AI 한 줄 요약/공감/그림분석을 진행한다."""
@@ -808,9 +958,9 @@ class AppGUI(tk.Tk):
         title = self.title_var.get().strip()
         content = self.content_text.get("1.0", tk.END).strip()
         location_name = self.location_var.get().strip()
-        # 날씨 1, 2 처리
+        # 날씨 처리 (하루 하나만 선택, 7-9-2)
         w_val1 = self.actual_weather_var.get().strip()
-        w_val2 = self.actual_weather_var2.get().strip()
+        w_val2 = ""
 
         # 감정 1, 2 처리
         e_label1 = self.emotion_var.get().strip()
@@ -881,6 +1031,7 @@ class AppGUI(tk.Tk):
                 self._on_new_clicked()
                 self._load_diary_list()
                 self.statusbar.config(text="🗑️ 일기가 삭제되었습니다.", fg=COLOR_TEXT_SUB)
+                self._show_calendar_page()
             else:
                 self.display_alert("삭제에 실패했습니다.")
 
@@ -891,7 +1042,6 @@ class AppGUI(tk.Tk):
         self.title_var.set("")
         self.location_var.set("")
         self.actual_weather_var.set(MANUAL_WEATHER_OPTIONS[0])
-        self.actual_weather_var2.set("선택안함")
         self.emotion_var.set(DEFAULT_EMOTION)
         self.emotion_var2.set("선택안함")
         self.content_text.delete("1.0", tk.END)

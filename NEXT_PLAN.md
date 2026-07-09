@@ -1,54 +1,45 @@
-> 코드 기준: `main`. `PLAN.md`에 남아있는 항목은 **7번(UI 대폭 개편)** 뿐입니다.
+> 코드 기준: `main`. **7번(UI 대폭 개편)은 구현 완료되어 `PLAN.md` 상단 요약으로 옮기고 이 파일에서
+> 정리했습니다.** 대신 `PLAN.md`의 **8번(그래프 그리기)** 중 아직 구현되지 않은 심화 스펙(색상 팔레트
+> 정밀화, Tk 캘린더의 단일 Canvas 재구현, 캘린더 위 미니 선그래프 오버레이)을 다음 작업 대상으로
+> 이 파일로 옮겼습니다.
 >
-> **3번(위치 프리셋), 5번(필터링 함수), 6번(필터링 적용) 모두 구현 완료되어 이 파일에서 제거했습니다.**
-> 구현 요약은 아래를 참고하세요.
+> **지금 상태**: 7번 작업의 일부로 감정 점수 히트맵 캘린더 자체는 이미 동작합니다(Qt:
+> `EmotionCalendarWidget`/`paintCell()`, Tk: `EmotionCalendarFrame`/날짜별 `tk.Label` 그리드,
+> `DiaryService.get_emotion_scores_by_date()`). 다만 아래 8-2/8-3/8-4는 그 기본 구현을 다듬거나
+> 확장하는 후속 작업이며 아직 반영되지 않았습니다.
 
-## 구현 요약 (2026-07-09)
+## 8. 그래프 그리기 (심화: 캘린더 색상/구조 정밀화 + 미니 선그래프)
 
-- **위치 프리셋(3번)**: `infrastructure/persistence/location_preset_store.py`의 `LocationPresetStore` —
-  `data/location.txt`(`.gitignore` 등록됨)에 한 줄씩 저장, 최초 실행 시 기본값(학교/직장/집)으로 파일 생성.
-  `DiaryService.get_location_presets()`로 조회, `save_diary()` 성공 시 새 위치를 자동으로 프리셋에 추가.
-  일기 작성 폼의 위치 입력(`locationLineEdit`/`location_entry`)을 편집 가능한 콤보박스로 교체.
-- **필터 함수(5번)**: `domain/model/value_objects.py`에 `DiaryFilter` 값 객체 추가
-  (`category`/`location`/`title_keyword`/`content_keyword`/`summary_keyword`, 전부 AND 조합).
-  `Diary.matches_filter(diary_filter)`가 새 시그니처로 교체됨(기존 문자열 카테고리 로직은
-  `_matches_category()`로 분리 보존). 위치/제목/본문/요약 매칭은 단순 부분 문자열 검색(대소문자 무시).
-  날짜 기간은 `DiaryFilter`에 넣지 않고 `DiaryService.get_all_diaries()`/`get_hidden_diaries()`가
-  `date_from`/`date_to`를 별도 인자로 받아 교집합으로 추가 적용.
-- **필터 적용(6번)**: 좌측 목록 패널에 "🔍 상세 필터" 접기/펼치기 버튼 + 위치 콤보박스 + 제목/본문/요약
-  키워드 입력창 3개 + 기간 체크박스·날짜 2개를 추가(Qt/Tk 동일 구성). 값이 바뀔 때마다 실시간으로
-  `_load_diary_list()`가 재조회됨. 키워드 분석 다이얼로그(`keyword_dialog.ui`/Tk 마인드맵 창)에도
-  카테고리·위치 필터를 추가해서 같은 `DiaryFilter`/`get_all_diaries()`를 재사용하도록 통일함
-  (기존 `get_diaries_by_date_range` 직접 호출은 키워드 분석에서는 제거하고, 월간 통계(Tk)에서만 그대로 사용).
+**검토**
+- `EmotionScore.value`(숫자 점수, `domain/model/value_objects.py`의 `EMOTION_LABEL_TO_SCORE`로 -5~5 범위)가 이미 각 일기에 존재하므로, 날짜별로 이 값을 시계열로 이어 그리는 형태(꺾은선 그래프)가 가장 자연스러움. 데이터 자체는 추가 작업 없이 바로 쓸 수 있음.
+- 렌더링은 `engine/keyword_analyzer.py`에서 이미 쓰고 있는 `matplotlib.figure.Figure` + `FigureCanvasAgg` 패턴을 그대로 재사용 가능(워드클라우드처럼 이미지를 만들어 Qt/Tk 쪽에 붙이는 방식). `requirements.txt`에 `matplotlib`이 이미 포함돼 있어 새 의존성 추가 불필요.
+- `is_hidden` 일기를 그래프/캘린더에 포함할지 여부 — 검토에서는 목록·필터와 동일하게 제외를 권장했으나 명시적 확정은 아직 없음. 현재 `get_emotion_scores_by_date()`는 `get_all_diaries()`(비밀 일기 제외)를 사용하므로 기본값은 "제외"로 이미 구현되어 있음 — 별도 이견이 없다면 이대로 유지.
 
-**테스트**: `tests/test_diary_filter.py` 신규 추가(DiaryFilter AND 조합, LocationPresetStore). 전체
-28개 중 26개 통과(나머지 2개는 이번 작업과 무관한 기존 cp949 콘솔 인코딩 이슈). 두 GUI 모두 필터
-패널·위치 콤보박스·키워드 분석 필터를 직접 조작해 정상 동작을 확인함.
+**확정된 사항 (2026-07-09 결정)**
 
-## 추가 구현 요약 (2026-07-09, 학점 필터링 + 필터 UI 통합)
+- **8-1 캘린더 뷰 — ✅ 결정, 기본 구현 완료**: 앱 MAIN 화면(7-2)의 캘린더가 날짜별 감정 점수를 색상으로 보여주는 히트맵 역할을 겸한다. 기본 형태(Qt `paintCell()` 오버라이드, Tk 날짜별 라벨 배경색)는 이미 동작 중 — 아래 8-3/8-4가 이를 정밀화하는 후속 작업.
+- **8-2 그래프를 캘린더 위에 투명 오버레이로 표시 — ✅ 결정, 미구현**: 꺾은선 그래프를 별도 탭/영역에 두는 대신, **캘린더(8-1) 배경 위에 투명 레이어로 겹쳐서** 함께 보여준다. 단, **한 달 전체를 잇는 하나의 선이 아니라 "한 주(그리드 한 행) 안에서만 이어지는 미니 선"** 으로 그린다 — 달력은 7일마다 줄바꿈되는 2차원 그리드라서 월 전체를 하나의 선으로 이으면 토요일→다음 주 일요일에서 선이 오른쪽 끝에서 왼쪽 끝으로 튀는 톱니 모양이 되어 추세를 읽기 어렵기 때문.
+  - **구현 방식(Qt)**: `QCalendarWidget`의 날짜 그리드는 내부적으로 `QTableView` 자식 위젯이므로(`findChild(QTableView)`로 접근), 각 날짜 셀의 `visualRect()`로 좌표를 구한 뒤, `WA_TranslucentBackground` + `WA_TransparentForMouseEvents`를 설정한 투명 오버레이 위젯을 캘린더 위에 얹고 `paintEvent`에서 한 주(행) 단위로만 `EmotionScore.value`를 잇는 선을 그린다. 공식 API는 아니고 내부 구조에 의존하는 방식이지만 Qt에서 널리 쓰이는 안정적인 우회법.
+  - **Tk**: `8-4`에서 단일 `Canvas` 직접 구현으로 확정됐으므로, 같은 `Canvas` 위에 `create_line()`으로 선만 얹으면 됨 — Qt보다 간단함(단, 현재 Tk 캘린더는 아직 개별 `tk.Label` 그리드라서 `8-4`의 단일 Canvas 재구현이 선행되어야 함).
+  - **축 스케일 고정 — ✅ 결정**: 미니 선의 세로축은 그 달 데이터 기준으로 정규화하지 않고, **`-5.0 ≤ y ≤ 5.0` 고정 축**을 사용한다. 달이 바뀌어도 셀 안에서의 선 높이만 보고 절대적인 점수 크기를 직관적으로 비교할 수 있게 하기 위함.
+  - **데이터 공백 처리 — ✅ 결정**: 일기를 쓰지 않은 요일은 선을 잇지 않고 **구간을 끊어서(스킵)** 표현한다 — 존재하지 않는 데이터를 보간해서 왜곡하지 않도록 함.
+- **8-5 그래프 기능의 이원화 — ✅ 결정, 매크로 뷰는 미구현**: `8-2`의 캘린더 위 미니 선(마이크로 뷰)이 기존에 검토에서 언급했던 "키워드 분석 다이얼로그처럼 기간 선택 가능한 꺾은선 그래프"를 완전히 대체하는 게 아니라, **두 가지를 역할이 다른 별개 기능으로 유지**하기로 확정.
+  - **마이크로 뷰(캘린더 위 미니 선, `8-2`)**: 요일별/주차별 단기 감정 흐름을 한눈에 파악하는 용도.
+  - **매크로 뷰(별도 팝업 꺾은선 그래프)**: 시작일~종료일 기간을 선택해 장기 추이를 분석하는 용도 — **존속 확정**, `matplotlib.figure.Figure`+`FigureCanvasAgg` 재사용 방식, "키워드 분석" 다이얼로그의 기간 선택 UI를 본뜨는 방향 그대로 진행.
+- **8-6 `emotion1`/`emotion2` 반영 방식 — ✅ 결정, 구현 완료(기존 코드로 이미 해결됨)**: 그래프/캘린더의 Y축·색상은 모두 **정량적 수치인 `EmotionScore.value`(score) 기준**으로 그린다. 하루에 감정을 2개 선택한 경우 `DiaryService.save_diary()`가 저장 시점에 이미 `score = round((score1+score2)/2)`로 평균을 내어 단일 `EmotionScore`로 저장하므로(`application/service/diary_service.py`), 그래프/캘린더 쪽에서 별도로 두 값을 합산할 필요가 없음 — 저장된 `EmotionScore.value`를 그대로 쓰면 됨. 원본 텍스트 라벨(`emotion_label`, 예: "재미있었어요,슬펐어요")은 점수에는 반영하지 않고 **마우스 오버 툴팁/상세 뷰에서만 참고 정보로 표시**한다.
 
-CSV에는 이미 `emotion_tier`가 저장되고 있었으나(직접 확인해서 사실이 아님을 밝힘), 아래 4가지
-실제 누락 사항을 확인하고 수정함.
+**확정된 사항 — 색상/구현 세부 (2026-07-09 결정)**
 
-- **목록에 학점 미표시**: `_load_diary_list()`가 각 항목에 `[티어]`를 표시하도록 수정(Qt: `f"{weather} {date_str} [{tier}]\n     {title}"`, Tk: `f" {weather}  {date_str}  [{tier}]  |  {title}"`).
-- **필터에 학점 미반영**: `EMOTION_TIER_OPTIONS = ("전체", "A+", "A", "B", "C", "D", "F")` 추가(`domain/model/value_objects.py`),
-  `DiaryFilter.tier` 필드 추가, `Diary.matches_filter()`가 티어 일치 여부를 검사하도록 수정.
-- **카테고리 필터(날씨/감정)가 상세 필터 밖에 별도 노출되던 문제**: Qt의 `filterComboBox`, Tk의 `filter_combo`를
-  더 이상 항상 보이는 위치에 두지 않고, 다른 필터들과 함께 하나의 접기/펼치기 영역(Qt: `filterToggle`/`filterContainer`,
-  Tk: `advanced_filter_toggle`/`advanced_filter_frame`, 버튼 텍스트를 "🔍 필터"로 통일)에 통합함.
-- **키워드 분석 다이얼로그가 필터 구성 함수를 재사용하지 않던 문제**: 필터 위젯 생성/`DiaryFilter` 구성 로직을
-  공용 헬퍼로 추출해서 메인 목록과 키워드 분석 다이얼로그가 동일 코드를 공유하도록 리팩터링:
-  - Qt: `_create_filter_widgets()`(위젯 dict 생성) / `_diary_filter_from_widgets()`(dict → `DiaryFilter`).
-    `show_mindmap_window()`가 더 이상 `categoryFilterComboBox`/`locationFilterLineEdit`를 직접 만들지 않고
-    이 헬퍼로 카테고리/학점/위치/제목·본문·요약 키워드 전체 세트를 노출.
-  - Tk: `_create_filter_vars()`(StringVar dict 생성) / `_build_filter_widgets(parent, variables, register_location_combo=True)`
-    (위젯 배치) / `_diary_filter_from_vars()`(dict → `DiaryFilter`). 마인드맵 창은
-    `register_location_combo=False`로 호출해서, 다이얼로그가 닫힌 뒤 위치 프리셋 새로고침이 파괴된
-    위젯을 건드리지 않도록 함.
-  - 키워드 분석 필터 세트를 기존 카테고리+위치 2개에서 메인 목록과 동일한 전체 6개(카테고리/학점/위치/
-    제목·본문·요약 키워드)로 확장(사용자가 "메인 목록과 동일한 전체 세트로 확장" 선택).
+- **8-3 다크 테마 히트맵 색상 스케일 — ✅ 결정, 미구현(현재는 임시 색상 사용 중)**: 기존 UI 배경색(Catppuccin Mocha 계열)과 조화를 유지하면서 미작성일/중립 일기를 확실히 구분한다. 현재 `EmotionCalendarWidget._color_for_score()`는 이 팔레트를 쓰지 않는 임시 보간(파랑↔주황)이라 교체가 필요함.
+  - **미작성일(데이터 없음)**: `#1e1e2e` — 메인 배경색(`ui/main_window.ui`)과 동일하게 처리해 배경에 묻히도록 함 → "데이터 누락"을 시각적으로 오해할 여지를 원천 차단.
+  - **0점(중립 일기)**: `#45475a` — 기존에 테두리 색으로 쓰이던 톤을 셀 채우기색으로 재사용. `#1e1e2e`보다 확실히 밝아 "일기는 썼지만 중립"임을 인지 가능.
+  - **긍정 점수(+)**: 파스텔 피치/코랄 계열(`#fab387` ~ `#f38ba8`).
+  - **부정 점수(−)**: 라벤더/블루 계열(`#89b4fa` ~ `#b4befe`).
+  - 파랑(부정)↔주황(긍정) 다이버징 스케일은 8-1에서 정한 "따뜻한 색=긍정/차가운 색=부정" 방향과 일치하며, 색약 사용자에게도 상대적으로 안전한 배색 조합(적록 대비 대신 청-주황 대비 사용).
+- **8-4 Tk 캘린더: 단일 Canvas 격자 구현 — ✅ 결정, 미구현(현재는 `tk.Label` 그리드로 구현됨)**: 셀마다 별도 위젯을 `grid()`로 배치하지 않고, **하나의 큰 `tk.Canvas` 위젯 안에 `create_rectangle()`로 캘린더 격자 전체를 렌더링**하도록 `EmotionCalendarFrame`을 재구현해야 함.
+  - 같은 `Canvas` 레이어 위에 `create_line()`으로 `8-2`의 미니 선을 그대로 얹을 수 있어 구현 난이도가 낮아짐.
+  - 이 프로젝트에 `grid`/`pack` 지오메트리 매니저 혼용으로 인한 `TclError` 이력이 있었던 만큼(커밋 `c944204`에서 수정), 캘린더를 여러 개별 위젯의 `grid()` 배치로 만들지 않고 단일 `Canvas`로 구현해 같은 종류의 리스크를 구조적으로 차단.
 
-**테스트**: `tests/test_diary_filter.py`에 티어 필터 테스트 3건 추가(단일 매치, `전체`/빈 값이 전체 매치,
-다른 조건과의 AND 조합). 전체 31개 중 29개 통과(나머지 2개는 여전히 무관한 cp949 이슈). 두 GUI 모두
-헤드리스로 기동해 필터 패널 토글, 학점 콤보박스 옵션, 키워드 분석 다이얼로그의 확장된 필터 세트가
-정상 동작함을 확인함.
+## 확인이 필요한 남은 질문
+
+- (8번) `is_hidden` 일기를 그래프/캘린더에서 제외하는 현재 동작(`get_emotion_scores_by_date()`가 `get_all_diaries()` 사용)을 그대로 유지할지 명시적 확인 필요 — 별다른 이견이 없다면 이대로 진행.

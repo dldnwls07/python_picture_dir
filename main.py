@@ -26,10 +26,15 @@ def run_tk() -> None:
 
 
 def run_qt() -> None:
+    from PyQt5.QtGui import QFont
     from PyQt5.QtWidgets import QApplication
     from app_gui import AppGUI
 
     qt_app = QApplication(sys.argv)
+    # 다크 테마에서 글꼴이 거칠게 보이는 문제 개선(7-9-1): 안티앨리어싱을 명시적으로 선호하도록 설정.
+    default_font = QFont("Pretendard")
+    default_font.setStyleStrategy(QFont.PreferAntialias)
+    qt_app.setFont(default_font)
     window = AppGUI()
     window.show()
     qt_app.exec_()

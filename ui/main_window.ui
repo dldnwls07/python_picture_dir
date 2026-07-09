@@ -19,9 +19,10 @@
       background-color: #1e1e2e;
     }
     QWidget {
-      color: #cdd6f4;
-      font-family: "Apple SD Gothic Neo", "-apple-system", sans-serif;
+      color: #f5f5f5;
+      font-family: "Pretendard", "Noto Sans KR", "Malgun Gothic", "-apple-system", sans-serif;
       font-size: 13px;
+      font-weight: 500;
     }
     QFrame#leftPanel {
       background-color: #181825;
@@ -108,17 +109,24 @@
       background-color: #585b70;
       color: #cdd6f4;
     }
+    /* 7-9-3: 메인(저장/새 일기 - 파랑, 위 QPushButton 기본값) / 서브(키워드 분석·비밀일기 관련 -
+       톤다운된 회색조) / 경고(삭제 - 차분한 빨강) 3색 팔레트로 정리 */
     QPushButton#deleteButton {
-      background-color: #f38ba8;
+      background-color: #e57c8a;
     }
     QPushButton#deleteButton:hover {
-      background-color: #eba0ac;
+      background-color: #ec94a0;
     }
-    QPushButton#mindmapButton {
-      background-color: #a6e3a1;
+    QPushButton#mindmapButton,
+    QPushButton#secretDiaryButton,
+    QPushButton#backToCalendarButton {
+      background-color: #45475a;
+      color: #f5f5f5;
     }
-    QPushButton#mindmapButton:hover {
-      background-color: #94e2d5;
+    QPushButton#mindmapButton:hover,
+    QPushButton#secretDiaryButton:hover,
+    QPushButton#backToCalendarButton:hover {
+      background-color: #585b70;
     }
     QLabel#weatherLabel {
       font-size: 48px;

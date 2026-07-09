@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QLabel, QComboBox, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QTableWidgetItem, QHeaderView, QScrollArea,
     QCheckBox, QInputDialog, QGraphicsOpacityEffect, QDateEdit,
+    QCalendarWidget, QStackedWidget, QFrame,
 )
 from PyQt5.QtCore import (
     QDate, Qt, QThread, pyqtSignal, QEvent, QVariantAnimation, QPropertyAnimation,
@@ -133,6 +134,60 @@ class DrawingCanvas(QWidget):
         return self._dirty
 
 
+class EmotionCalendarWidget(QCalendarWidget):
+    """날짜별 평균 감정 점수를 배경색 히트맵으로 보여주는 캘린더."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scores_by_date = {}
+        self.setGridVisible(True)
+        self.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
+        # 7-9-4: 선택 날짜의 각진 점선 포커스 테두리 제거 + 그리드 셀 내부 여백 확보
+        self.setStyleSheet("""
+            QCalendarWidget QAbstractItemView:enabled {
+                outline: 0;
+                selection-background-color: #89b4fa;
+                selection-color: #1e1e2e;
+                padding: 4px;
+            }
+            QCalendarWidget QToolButton {
+                color: #f5f5f5;
+                background-color: transparent;
+                border-radius: 6px;
+                padding: 4px 8px;
+            }
+            QCalendarWidget QToolButton:hover {
+                background-color: #313244;
+            }
+        """)
+
+    def set_emotion_scores(self, scores_by_date: dict):
+        """{"yyyy-MM-dd": 평균 점수} 형태의 딕셔너리로 히트맵 데이터를 갱신한다."""
+        self._scores_by_date = scores_by_date
+        self.updateCells()
+
+    def paintCell(self, painter: QPainter, rect, date: QDate):
+        super().paintCell(painter, rect, date)
+        score = self._scores_by_date.get(date.toString("yyyy-MM-dd"))
+        if score is None:
+            return
+        painter.save()
+        painter.setOpacity(0.55)
+        painter.fillRect(rect, self._color_for_score(score))
+        painter.restore()
+
+    @staticmethod
+    def _color_for_score(score: float) -> QColor:
+        """점수(-5~5)를 차가운 색(부정)에서 따뜻한 색(긍정)으로 보간한다."""
+        ratio = (max(-5.0, min(5.0, score)) + 5.0) / 10.0
+        cold = QColor(69, 71, 90)     # 어두운 슬레이트 (부정)
+        warm = QColor(250, 179, 135)  # 따뜻한 주황 (긍정)
+        r = int(cold.red() + (warm.red() - cold.red()) * ratio)
+        g = int(cold.green() + (warm.green() - cold.green()) * ratio)
+        b = int(cold.blue() + (warm.blue() - cold.blue()) * ratio)
+        return QColor(r, g, b)
+
+
 class SaveWorker(QThread):
     """저장(+AI 한 줄 요약) → AI 공감/그림분석을 순서대로 실행하는 백그라운드 워커."""
 
@@ -198,6 +253,10 @@ class AppGUI(QMainWindow):
         self._secret_mode = False
         self._secret_color_anim = None
         self._tear_animation_group = None
+        # QListWidget은 창이 처음 화면에 표시될 때 내부적으로 0번 항목을 한 번 자동 선택하는
+        # 습성이 있어(사용자 조작이 아님), 그로 인한 최초 1회의 currentItemChanged를 걸러내기
+        # 위한 플래그. _on_diary_selected에서 소비된다.
+        self._suppress_next_diary_selection = True
         # UI 초기화
         self._init_ui()
         self._connect_events()
@@ -215,8 +274,52 @@ class AppGUI(QMainWindow):
     def _text_processor(self):
         return self._diary_service._text_processor
 
+    def _init_right_stack(self):
+        """rightPanel을 캘린더(MAIN)/일기 편집 두 페이지짜리 QStackedWidget으로 재구성한다(7-2/7-3).
+
+        .ui에서 로드된 rightLayout(및 그 안의 모든 위젯)은 그대로 editorPage로 옮겨 붙이므로,
+        이 메서드 이후의 _init_ui() 코드는 지금까지와 동일하게 self.rightLayout/self.headerLayout/
+        self.buttonLayout 등을 그대로 참조해도 된다.
+        """
+        # rightLayout을 rightPanel에서 editorPage로 옮겨 붙인다. Qt에서 위젯의 레이아웃을 다른
+        # 위젯으로 직접 옮기는 API는 없어서, 참조를 유지하는 임시 홀더 위젯에 한 번 옮겼다가
+        # editorPage로 다시 옮기는 2단계 홉이 필요하다(홀더가 파이썬 참조 없이 즉시 GC되면
+        # 레이아웃까지 같이 삭제되므로 반드시 지역 변수로 참조를 들고 있어야 한다).
+        layout_move_holder = QWidget()
+        layout_move_holder.setLayout(self.rightPanel.layout())
+        self.editorPage = QWidget()
+        self.editorPage.setLayout(layout_move_holder.layout())
+
+        # 캘린더(MAIN) 페이지 구성. "새 일기" 버튼은 새로 만들지 않고 .ui의 buttonLayout에 있던
+        # newButton을 그대로 옮겨와 재사용한다 — 캘린더 페이지에만 존재해야 하므로(7-10) 편집
+        # 페이지의 버튼 줄에서는 제거한다.
+        self.buttonLayout.removeWidget(self.newButton)
+        self.calendarPage = QWidget()
+        calendar_layout = QVBoxLayout(self.calendarPage)
+        calendar_layout.setContentsMargins(24, 20, 24, 16)
+        calendar_layout.setSpacing(12)
+        self.emotionCalendar = EmotionCalendarWidget()
+        calendar_layout.addWidget(self.emotionCalendar)
+        self.newButton.setMinimumHeight(40)
+        calendar_layout.addWidget(self.newButton)
+
+        self.rightStack = QStackedWidget()
+        self.rightStack.addWidget(self.calendarPage)  # index 0: 캘린더(MAIN)
+        self.rightStack.addWidget(self.editorPage)    # index 1: 일기 편집
+
+        right_panel_layout = QVBoxLayout(self.rightPanel)
+        right_panel_layout.setContentsMargins(0, 0, 0, 0)
+        right_panel_layout.addWidget(self.rightStack)
+
+        self.rightStack.setCurrentIndex(0)
+
     def _init_ui(self):
         """메인 화면 초기 설정."""
+        # rightPanel 내부를 "캘린더(MAIN)"/"일기 편집" 두 페이지를 오가는 스택으로 재구성한다(7-2/7-3).
+        # 기존 rightLayout(및 그 안의 모든 위젯)은 그대로 editorPage로 옮기고, rightPanel 자체는
+        # 새 QVBoxLayout 하나로 QStackedWidget만 담도록 바꾼다.
+        self._init_right_stack()
+
         # 오늘 날짜 설정
         self.dateEdit.setDate(QDate.currentDate())
 
@@ -279,10 +382,9 @@ class AppGUI(QMainWindow):
         self.locationLineEdit.setPlaceholderText("위치를 입력하세요")
         self.locationLineEdit.addItems(self._diary_service.get_location_presets())
         self.locationLineEdit.setCurrentText("")
+        # 날씨는 하루에 하나만 고르면 충분해서 콤보박스 하나로 통합했다(7-9-2).
         self.actualWeatherComboBox = QComboBox()
         self.actualWeatherComboBox.addItems(MANUAL_WEATHER_OPTIONS)
-        self.actualWeatherComboBox2 = QComboBox()
-        self.actualWeatherComboBox2.addItems(["선택안함"] + list(MANUAL_WEATHER_OPTIONS))
 
         self.emotionComboBox = QComboBox()
         self.emotionComboBox.addItems(MANUAL_EMOTION_OPTIONS)
@@ -294,7 +396,6 @@ class AppGUI(QMainWindow):
         context_row.addWidget(self.locationLineEdit, 1)
         context_row.addWidget(QLabel("날씨"))
         context_row.addWidget(self.actualWeatherComboBox, 1)
-        context_row.addWidget(self.actualWeatherComboBox2, 1)
         context_row.addWidget(QLabel("감정"))
         context_row.addWidget(self.emotionComboBox, 1)
         context_row.addWidget(self.emotionComboBox2, 1)
@@ -353,13 +454,27 @@ class AppGUI(QMainWindow):
         self.rightLayout.setStretchFactor(draw_layout, 3)
         self.rightLayout.setStretchFactor(text_layout, 2)
 
-        # 비밀 일기장 진입/나가기 버튼 (위치는 임시 — PLAN.md 7번 UI 개편 때 정식 배치)
+        # 목록과 하단 내비게이션 버튼 그룹을 시각적으로 분리하는 얇은 구분선(7-7).
+        nav_separator = QFrame()
+        nav_separator.setFrameShape(QFrame.HLine)
+        nav_separator.setStyleSheet("background-color: #313244; max-height: 1px; border: none;")
+        self.leftLayout.addWidget(nav_separator)
+
+        # 편집 페이지에서 캘린더(MAIN)로 돌아가는 버튼 — 좌측 내비게이션은 항상 고정 표시이므로
+        # 여기 두면 어느 페이지에 있든 접근 가능하다.
+        self.backToCalendarButton = QPushButton("🗓️ 캘린더로")
+        self.backToCalendarButton.setObjectName("backToCalendarButton")
+        self.leftLayout.addWidget(self.backToCalendarButton)
+
+        # 비밀 일기장 진입/나가기 버튼 — 캘린더/편집 페이지 전환과 무관하게 항상 접근 가능해야 하는
+        # 전역 모드 전환이므로, 우측 스택이 아니라 항상 고정 표시되는 좌측 내비게이션에 둔다(7번 확정).
         self.secretDiaryButton = QPushButton("🔒 비밀일기 찾기")
-        self.buttonLayout.addWidget(self.secretDiaryButton)
+        self.secretDiaryButton.setObjectName("secretDiaryButton")
+        self.leftLayout.addWidget(self.secretDiaryButton)
 
         self.exitSecretModeButton = QPushButton("🚪 나가기")
         self.exitSecretModeButton.setVisible(False)
-        self.buttonLayout.addWidget(self.exitSecretModeButton)
+        self.leftLayout.addWidget(self.exitSecretModeButton)
 
         # QComboBox 스타일을 다크 모드에 맞게 전역 추가 (QTabWidget 스타일 제거)
         extra_style = """
@@ -403,9 +518,12 @@ class AppGUI(QMainWindow):
         self.saveButton.clicked.connect(self.on_save_clicked)
         self.deleteButton.clicked.connect(self._on_delete_clicked)
         self.mindmapButton.clicked.connect(self.show_mindmap_window)
-        self.newButton.clicked.connect(self._on_new_clicked)
+        self.newButton.clicked.connect(self._on_new_diary_requested)
+        self.backToCalendarButton.clicked.connect(self._show_calendar_page)
         self.secretDiaryButton.clicked.connect(self._on_open_secret_diary_clicked)
         self.exitSecretModeButton.clicked.connect(self._exit_secret_mode)
+        self.emotionCalendar.clicked.connect(self._on_calendar_date_clicked)
+        self.emotionCalendar.currentPageChanged.connect(self._refresh_calendar_scores)
         self.diaryListWidget.currentItemChanged.connect(self._on_diary_selected)
         self.colorComboBox.currentTextChanged.connect(self.drawingCanvas.set_pen_color)
         self.clearCanvasButton.clicked.connect(self._clear_canvas)
@@ -483,6 +601,7 @@ class AppGUI(QMainWindow):
         self._set_form_read_only(True)
         self._load_diary_list()
         self._start_secret_color_animation()
+        self.rightStack.setCurrentIndex(1)
 
     def _exit_secret_mode(self):
         """'나가기' 버튼 클릭: 일반 목록/테마로 복귀한다."""
@@ -495,6 +614,7 @@ class AppGUI(QMainWindow):
         self._set_form_read_only(False)
         self._on_new_clicked()
         self._load_diary_list()
+        self.rightStack.setCurrentIndex(0)
 
     def _set_form_read_only(self, read_only: bool):
         """비밀 일기장 모드에서는 선택한 일기를 읽기 전용으로만 보여준다 (삭제는 계속 허용)."""
@@ -503,7 +623,6 @@ class AppGUI(QMainWindow):
         self.contentEdit.setEnabled(editable)
         self.locationLineEdit.setEnabled(editable)
         self.actualWeatherComboBox.setEnabled(editable)
-        self.actualWeatherComboBox2.setEnabled(editable)
         self.emotionComboBox.setEnabled(editable)
         self.emotionComboBox2.setEnabled(editable)
         self.dateEdit.setEnabled(editable)
@@ -672,9 +791,9 @@ class AppGUI(QMainWindow):
         content = self.contentEdit.toPlainText().strip()
         location_name = self.locationLineEdit.currentText().strip()
 
-        # 날씨 1, 2 처리
+        # 날씨 처리 (하루 하나만 선택, 7-9-2)
         w_val1 = self.actualWeatherComboBox.currentText().strip()
-        w_val2 = self.actualWeatherComboBox2.currentText().strip()
+        w_val2 = ""
 
         # 감정 1, 2 처리
         e_label1 = self.emotionComboBox.currentText().strip()
@@ -757,6 +876,7 @@ class AppGUI(QMainWindow):
                 self._on_new_clicked()
                 self._load_diary_list()
                 self._set_status_message("🗑️ 일기가 삭제되었습니다.")
+                self.rightStack.setCurrentIndex(0)
             else:
                 self.display_alert("삭제에 실패했습니다.")
 
@@ -767,7 +887,6 @@ class AppGUI(QMainWindow):
         self.titleEdit.clear()
         self.locationLineEdit.setCurrentText("")
         self.actualWeatherComboBox.setCurrentText(MANUAL_WEATHER_OPTIONS[0])
-        self.actualWeatherComboBox2.setCurrentText("선택안함")
         self.emotionComboBox.setCurrentText(DEFAULT_EMOTION)
         self.emotionComboBox2.setCurrentText("선택안함")
         self.contentEdit.clear()
@@ -783,6 +902,9 @@ class AppGUI(QMainWindow):
 
     def _on_diary_selected(self, current: QListWidgetItem, previous):
         """일기 목록에서 항목 선택 시 내용을 표시한다."""
+        if self._suppress_next_diary_selection:
+            self._suppress_next_diary_selection = False
+            return
         if current is None:
             return
 
@@ -793,80 +915,112 @@ class AppGUI(QMainWindow):
         # 서비스에서 해당 일기 조회
         diary = self._diary_service.get_diary_by_id(diary_id)
         if diary:
-            self._current_diary_id = diary_id
-            self.dateEdit.setDate(QDate.fromString(diary.date, "yyyy-MM-dd"))
-            self.titleEdit.setText(diary.title)
-            self.locationLineEdit.setCurrentText(diary.weather.location)
-            actual_weather_val = diary.weather.actual_weather
-            actual_weather_text_val = diary.weather.actual_weather_text
+            self._load_diary_into_form(diary)
 
-            # 날씨 1, 2 로드
-            weathers_emoji = [w.strip() for w in actual_weather_val.split(",") if w.strip()]
-            weathers_text = [w.strip() for w in actual_weather_text_val.split(",") if w.strip()]
+    def _load_diary_into_form(self, diary):
+        """일기 엔티티를 편집 폼에 채우고 편집 페이지로 전환한다 (목록 선택/캘린더 날짜 클릭이 공유, 7-8)."""
+        self._current_diary_id = diary.id
+        self.dateEdit.setDate(QDate.fromString(diary.date, "yyyy-MM-dd"))
+        self.titleEdit.setText(diary.title)
+        self.locationLineEdit.setCurrentText(diary.weather.location)
+        actual_weather_val = diary.weather.actual_weather
+        actual_weather_text_val = diary.weather.actual_weather_text
 
-            def find_weather_label(emoji, text):
-                label = f"{emoji} {text}".strip()
-                for opt in MANUAL_WEATHER_OPTIONS:
-                    if opt.strip() == label:
-                        return opt
-                return None
+        # 날씨 로드 (레거시 데이터에 콤마로 여러 날씨가 저장돼 있어도 첫 번째만 사용, 7-9-2)
+        weathers_emoji = [w.strip() for w in actual_weather_val.split(",") if w.strip()]
+        weathers_text = [w.strip() for w in actual_weather_text_val.split(",") if w.strip()]
 
-            if len(weathers_emoji) >= 1:
-                lbl1 = find_weather_label(weathers_emoji[0], weathers_text[0] if len(weathers_text) >= 1 else "")
-                self.actualWeatherComboBox.setCurrentText(lbl1 or MANUAL_WEATHER_OPTIONS[0])
-            else:
-                self.actualWeatherComboBox.setCurrentText(MANUAL_WEATHER_OPTIONS[0])
+        def find_weather_label(emoji, text):
+            label = f"{emoji} {text}".strip()
+            for opt in MANUAL_WEATHER_OPTIONS:
+                if opt.strip() == label:
+                    return opt
+            return None
 
-            if len(weathers_emoji) >= 2:
-                lbl2 = find_weather_label(weathers_emoji[1], weathers_text[1] if len(weathers_text) >= 2 else "")
-                self.actualWeatherComboBox2.setCurrentText(lbl2 or "선택안함")
-            else:
-                self.actualWeatherComboBox2.setCurrentText("선택안함")
+        if len(weathers_emoji) >= 1:
+            lbl1 = find_weather_label(weathers_emoji[0], weathers_text[0] if len(weathers_text) >= 1 else "")
+            self.actualWeatherComboBox.setCurrentText(lbl1 or MANUAL_WEATHER_OPTIONS[0])
+        else:
+            self.actualWeatherComboBox.setCurrentText(MANUAL_WEATHER_OPTIONS[0])
 
-            emotion_label_val = diary.emotion_label or DEFAULT_EMOTION
-            emotion_label = emotion_label_val
-            emotions = [e.strip() for e in emotion_label_val.split(",") if e.strip()]
+        emotion_label_val = diary.emotion_label or DEFAULT_EMOTION
+        emotion_label = emotion_label_val
+        emotions = [e.strip() for e in emotion_label_val.split(",") if e.strip()]
 
-            if len(emotions) >= 1:
-                if emotions[0] in MANUAL_EMOTION_OPTIONS:
-                    self.emotionComboBox.setCurrentText(emotions[0])
-                else:
-                    self.emotionComboBox.setCurrentText(DEFAULT_EMOTION)
+        if len(emotions) >= 1:
+            if emotions[0] in MANUAL_EMOTION_OPTIONS:
+                self.emotionComboBox.setCurrentText(emotions[0])
             else:
                 self.emotionComboBox.setCurrentText(DEFAULT_EMOTION)
+        else:
+            self.emotionComboBox.setCurrentText(DEFAULT_EMOTION)
 
-            if len(emotions) >= 2:
-                if emotions[1] in MANUAL_EMOTION_OPTIONS:
-                    self.emotionComboBox2.setCurrentText(emotions[1])
-                else:
-                    self.emotionComboBox2.setCurrentText("선택안함")
+        if len(emotions) >= 2:
+            if emotions[1] in MANUAL_EMOTION_OPTIONS:
+                self.emotionComboBox2.setCurrentText(emotions[1])
             else:
                 self.emotionComboBox2.setCurrentText("선택안함")
-            self.contentEdit.setPlainText(diary.content)
-            self._existing_image_path = ""
-            self._remove_existing_image = False
-            self._clear_canvas(mark_removed=False)
+        else:
+            self.emotionComboBox2.setCurrentText("선택안함")
+        self.contentEdit.setPlainText(diary.content)
+        self._existing_image_path = ""
+        self._remove_existing_image = False
+        self._clear_canvas(mark_removed=False)
 
-            image_path = diary.image_path
-            if image_path and os.path.exists(image_path):
-                try:
-                    self.drawingCanvas.load_image(image_path)
-                    self._existing_image_path = image_path
-                except Exception as e:
-                    print(f"이미지 로드 실패: {e}")
+        image_path = diary.image_path
+        if image_path and os.path.exists(image_path):
+            try:
+                self.drawingCanvas.load_image(image_path)
+                self._existing_image_path = image_path
+            except Exception as e:
+                print(f"이미지 로드 실패: {e}")
 
-            # 날씨 표시
-            weather = diary.weather.emoji
-            score = int(diary.emotion_score.value)
-            tier = diary.emotion_score.tier
-            self.weatherLabel.setText(weather)
-            self.scoreLabel.setText(f"감정 상태: {emotion_label} ({score}점, 티어: {tier})")
-            self.hideCheckBox.setChecked(diary.is_hidden)
+        # 날씨 표시
+        weather = diary.weather.emoji
+        score = int(diary.emotion_score.value)
+        tier = diary.emotion_score.tier
+        self.weatherLabel.setText(weather)
+        self.scoreLabel.setText(f"감정 상태: {emotion_label} ({score}점, 티어: {tier})")
+        self.hideCheckBox.setChecked(diary.is_hidden)
 
-            self.deleteButton.setEnabled(True)
-            self._set_status_message(
-                f"📖 {diary.date} — {diary.title or ''}"
-            )
+        self.deleteButton.setEnabled(True)
+        self._set_status_message(
+            f"📖 {diary.date} — {diary.title or ''}"
+        )
+        self.rightStack.setCurrentIndex(1)
+
+    # ── 캘린더(MAIN) 페이지 ────────────────────────────────────
+
+    def _show_calendar_page(self):
+        """좌측 '캘린더로' 버튼: 편집 페이지에서 캘린더(MAIN) 페이지로 돌아간다."""
+        self.rightStack.setCurrentIndex(0)
+
+    def _on_new_diary_requested(self):
+        """캘린더 페이지의 '새 일기' 버튼: 폼을 초기화하고 편집 페이지로 전환한다."""
+        self._on_new_clicked()
+        self.rightStack.setCurrentIndex(1)
+
+    def _refresh_calendar_scores(self):
+        """감정 점수 히트맵 데이터를 다시 조회해 캘린더에 반영한다."""
+        self.emotionCalendar.set_emotion_scores(self._diary_service.get_emotion_scores_by_date())
+
+    def _on_calendar_date_clicked(self, date: QDate):
+        """캘린더에서 날짜를 클릭했을 때의 진입 동선을 처리한다(7-8).
+
+        빈 날짜 → 그 날짜로 새 일기 작성. 일기가 있는 날짜 → 목록에서 선택한 것과 동일하게 편집
+        페이지로 로드. 단, 그 일기가 비밀 일기면 선택 자체를 막고 안내만 띄운다.
+        """
+        date_str = date.toString("yyyy-MM-dd")
+        diary = self._diary_service.find_diary_for_date(date_str)
+        if diary is None:
+            self._on_new_clicked()
+            self.dateEdit.setDate(date)
+            self.rightStack.setCurrentIndex(1)
+            return
+        if diary.is_hidden:
+            self.display_alert("비밀 일기는 캘린더에서 선택할 수 없습니다.")
+            return
+        self._load_diary_into_form(diary)
 
     # ── UI 업데이트 ────────────────────────────────────────────
 
@@ -945,6 +1099,7 @@ class AppGUI(QMainWindow):
         """
         self._reset_hovered_diary_item()
         self.diaryListWidget.clear()
+        self._refresh_calendar_scores()
 
         diary_filter = self._build_diary_filter()
         date_from = ""

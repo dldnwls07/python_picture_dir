@@ -6,9 +6,11 @@ from unittest.mock import patch, MagicMock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from app_gui import AppGUI
+from domain.model.diary import Diary
+from domain.model.value_objects import EmotionScore, Weather
 from infrastructure.persistence.csv_diary_repository import CSVDiaryRepository
 from infrastructure.persistence.secret_password_store import SecretPasswordStore
 from application.service.diary_service import DiaryService
@@ -110,6 +112,67 @@ class AppGuiTest(unittest.TestCase):
 
         self.assertTrue(self.password_store.has_password())
         self.assertEqual(self.window.diaryListWidget.count(), 0)
+
+    def _save_diary(self, date: str, is_hidden: bool = False) -> Diary:
+        diary = Diary(
+            diary_id=None,
+            date=date,
+            title="테스트 일기",
+            content="내용",
+            emotion_score=EmotionScore(3),
+            emotion_label="재미있었어요",
+            weather=Weather(emoji="☀️", actual_weather="☀️", location="Seoul"),
+            is_hidden=is_hidden,
+        )
+        self.repo.save(diary)
+        return diary
+
+    def test_starts_on_calendar_page(self):
+        self.assertEqual(self.window.rightStack.currentIndex(), 0)
+        self.assertIs(self.window.rightStack.currentWidget(), self.window.calendarPage)
+
+    def test_new_diary_button_switches_to_editor_page(self):
+        self.window.newButton.click()
+        self.assertEqual(self.window.rightStack.currentIndex(), 1)
+
+    def test_back_to_calendar_button_returns_to_calendar_page(self):
+        self.window.newButton.click()
+        self.assertEqual(self.window.rightStack.currentIndex(), 1)
+        self.window.backToCalendarButton.click()
+        self.assertEqual(self.window.rightStack.currentIndex(), 0)
+
+    def test_calendar_click_on_empty_date_opens_new_diary_form(self):
+        from PyQt5.QtCore import QDate
+        target = QDate.currentDate().addDays(5)
+        self.window._on_calendar_date_clicked(target)
+        self.assertEqual(self.window.rightStack.currentIndex(), 1)
+        self.assertEqual(self.window.dateEdit.date(), target)
+        self.assertIsNone(self.window._current_diary_id)
+
+    def test_calendar_click_on_existing_date_loads_diary(self):
+        diary = self._save_diary("2026-03-01")
+        from PyQt5.QtCore import QDate
+        self.window._on_calendar_date_clicked(QDate.fromString("2026-03-01", "yyyy-MM-dd"))
+        self.assertEqual(self.window.rightStack.currentIndex(), 1)
+        self.assertEqual(self.window._current_diary_id, diary.id)
+        self.assertEqual(self.window.titleEdit.text(), "테스트 일기")
+
+    @patch("PyQt5.QtWidgets.QMessageBox.information")
+    def test_calendar_click_on_hidden_diary_date_is_blocked(self, mock_info):
+        self._save_diary("2026-03-02", is_hidden=True)
+        from PyQt5.QtCore import QDate
+        self.window.rightStack.setCurrentIndex(0)
+        self.window._on_calendar_date_clicked(QDate.fromString("2026-03-02", "yyyy-MM-dd"))
+        mock_info.assert_called_once()
+        self.assertEqual(self.window.rightStack.currentIndex(), 0)
+
+    def test_delete_returns_to_calendar_page(self):
+        diary = self._save_diary("2026-03-03")
+        self.window._load_diary_into_form(diary)
+        self.assertEqual(self.window.rightStack.currentIndex(), 1)
+        with patch("PyQt5.QtWidgets.QMessageBox.question", return_value=QMessageBox.Yes):
+            self.window._on_delete_clicked()
+        self.assertEqual(self.window.rightStack.currentIndex(), 0)
 
 
 if __name__ == "__main__":

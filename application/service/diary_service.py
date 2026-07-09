@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from domain.model.diary import Diary
 from domain.model.value_objects import (
     EMOTION_LABEL_TO_SCORE,
@@ -65,6 +65,14 @@ class DiaryService:
         result = [d for d in diaries if d.is_hidden and d.matches_filter(f)]
         return self._apply_date_range(result, date_from, date_to)
 
+    def get_emotion_scores_by_date(self) -> Dict[str, float]:
+        """날짜별 평균 감정 점수를 반환합니다(캘린더 히트맵용, 비밀 일기 제외)."""
+        diaries = self.get_all_diaries()
+        scores_by_date: Dict[str, List[float]] = {}
+        for d in diaries:
+            scores_by_date.setdefault(d.date, []).append(d.emotion_score.value)
+        return {date: sum(values) / len(values) for date, values in scores_by_date.items()}
+
     def get_location_presets(self) -> List[str]:
         """위치 입력 콤보박스에 채울 프리셋 목록(기본값 + 사용자 추가분)을 반환합니다."""
         return self._location_store.get_all()
@@ -72,6 +80,17 @@ class DiaryService:
     def get_diary_by_id(self, diary_id: int) -> Optional[Diary]:
         """ID로 특정 일기를 조회합니다."""
         return self._repository.find_by_id(diary_id)
+
+    def find_diary_for_date(self, date: str) -> Optional[Diary]:
+        """해당 날짜의 일기를 하나 반환합니다(비밀 일기 포함, 캘린더 날짜 클릭 용도).
+
+        같은 날짜에 여러 건이 있으면 가장 최근에 작성/수정된 것을 반환합니다.
+        """
+        diaries = [d for d in self._repository.find_all() if d.date == date]
+        if not diaries:
+            return None
+        diaries.sort(key=lambda d: d.created_at, reverse=True)
+        return diaries[0]
 
     def get_diaries_by_date_range(self, start: str, end: str) -> List[Diary]:
         """특정 기간 동안의 일기를 조회합니다 (비밀 일기 제외)."""
