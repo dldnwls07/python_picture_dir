@@ -373,7 +373,7 @@ class AppGUI(tk.Tk):
             padx=10,
             pady=4
         )
-        self.statusbar.pack(side="bottom", fill="x")
+        self.statusbar.grid(row=1, column=0, columnspan=2, sticky="ew")
 
     def _connect_events(self):
         """이벤트 연결."""
