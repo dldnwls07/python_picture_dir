@@ -57,6 +57,8 @@ EMOTION_LABEL_TO_WEATHER = {
 
 ALL_FILTER_OPTIONS = ("전체보기",) + WEATHER_FILTERS + EMOTION_FILTERS
 
+EMOTION_TIER_OPTIONS = ("전체", "A+", "A", "B", "C", "D", "F")
+
 WEATHER_LABEL_TO_EMOJI: Dict[str, str] = {
     "☀️ 맑음": "☀️",
     "⛅ 흐림": "⛅",
@@ -149,3 +151,30 @@ class Weather:
 
     def __repr__(self):
         return f"Weather(emoji={self.emoji}, text={self.text}, location={self.location})"
+
+
+class DiaryFilter:
+    """일기 목록 화면에서 사용하는 다중 조건 필터 값 객체 (모든 조건은 AND로 조합됨)."""
+
+    def __init__(
+        self,
+        category: str = "전체보기",
+        tier: str = "",
+        location: str = "",
+        title_keyword: str = "",
+        content_keyword: str = "",
+        summary_keyword: str = "",
+    ):
+        self.category = category or "전체보기"
+        self.tier = "" if not tier or tier == "전체" else tier.strip()
+        self.location = (location or "").strip()
+        self.title_keyword = (title_keyword or "").strip()
+        self.content_keyword = (content_keyword or "").strip()
+        self.summary_keyword = (summary_keyword or "").strip()
+
+    def __repr__(self):
+        return (
+            f"DiaryFilter(category={self.category!r}, tier={self.tier!r}, location={self.location!r}, "
+            f"title_keyword={self.title_keyword!r}, content_keyword={self.content_keyword!r}, "
+            f"summary_keyword={self.summary_keyword!r})"
+        )

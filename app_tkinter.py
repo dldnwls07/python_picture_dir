@@ -30,10 +30,12 @@ import collections
 from diary_categories import (
     ALL_FILTER_OPTIONS,
     DEFAULT_EMOTION,
+    EMOTION_TIER_OPTIONS,
     MANUAL_EMOTION_OPTIONS,
     MANUAL_WEATHER_OPTIONS,
     truncate_summary,
 )
+from domain.model.value_objects import DiaryFilter
 from application.service.diary_service import DiaryService
 
 
@@ -140,18 +142,39 @@ class AppGUI(tk.Tk):
         lbl_list = ttk.Label(left_panel, text="일기 히스토리", style="Header.TLabel")
         lbl_list.pack(anchor="w", pady=(0, 5))
         
-        # 카테고리 필터
-        filter_frame = ttk.Frame(left_panel, style="TFrame")
-        filter_frame.pack(fill="x", pady=(0, 10))
-        ttk.Label(filter_frame, text="필터:", font=("Malgun Gothic", 9)).pack(side="left", padx=(0, 5))
-        self.filter_var = tk.StringVar(value="전체보기")
-        self.filter_combo = ttk.Combobox(filter_frame, textvariable=self.filter_var, state="readonly", width=12, font=("Malgun Gothic", 9))
-        self.filter_combo['values'] = ALL_FILTER_OPTIONS
-        self.filter_combo.pack(side="left")
+        # 필터(카테고리/학점/위치/키워드 3종/기간) — 한 곳에 모아서 접었다 펼 수 있는 영역
+        self._location_filter_combos = []
+        self._advanced_filter_shown = False
+        self.advanced_filter_toggle = tk.Button(left_panel, text="🔍 필터 ▾")
+        self.advanced_filter_toggle.pack(fill="x", pady=(0, 6))
+        style_flat_button(self.advanced_filter_toggle, COLOR_SECONDARY, font_size=9)
+
+        self.advanced_filter_frame = ttk.Frame(left_panel, style="TFrame")
+        # 처음엔 숨겨둠 — 토글 버튼을 눌러야 pack()으로 표시됨
+
+        self._main_filter_vars = self._create_filter_vars()
+        self.filter_var = self._main_filter_vars["category"]
+        self.tier_filter_var = self._main_filter_vars["tier"]
+        self.location_filter_var = self._main_filter_vars["location"]
+        self.title_keyword_var = self._main_filter_vars["title_keyword"]
+        self.content_keyword_var = self._main_filter_vars["content_keyword"]
+        self.summary_keyword_var = self._main_filter_vars["summary_keyword"]
+        self._build_filter_widgets(self.advanced_filter_frame, self._main_filter_vars)
+
+        date_filter_row = ttk.Frame(self.advanced_filter_frame, style="TFrame")
+        date_filter_row.pack(fill="x", pady=(0, 4))
+        self.date_filter_enabled_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(date_filter_row, text="기간", variable=self.date_filter_enabled_var).pack(side="left")
+        self.filter_start_date_var = tk.StringVar(value=(datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"))
+        ttk.Entry(date_filter_row, textvariable=self.filter_start_date_var, width=10, font=("Malgun Gothic", 9)).pack(side="left", padx=(4, 2))
+        ttk.Label(date_filter_row, text="~", font=("Malgun Gothic", 9)).pack(side="left")
+        self.filter_end_date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        ttk.Entry(date_filter_row, textvariable=self.filter_end_date_var, width=10, font=("Malgun Gothic", 9)).pack(side="left", padx=(2, 0))
 
         # 카드 형태의 컨테이너 안에 리스트박스 배치
         list_card = ttk.Frame(left_panel, style="Card.TFrame", padding=1)
         list_card.pack(fill="both", expand=True)
+        self._diary_list_card = list_card
 
         self.diary_listbox = tk.Listbox(
             list_card,
@@ -215,7 +238,12 @@ class AppGUI(tk.Tk):
         ttk.Label(context_frame, text="감정", style="Card.TLabel", font=("Malgun Gothic", 10, "bold")).grid(row=0, column=3, columnspan=2, sticky="w")
 
         self.location_var = tk.StringVar()
-        self.location_entry = ttk.Entry(context_frame, textvariable=self.location_var, font=("Malgun Gothic", 10))
+        self.location_entry = ttk.Combobox(
+            context_frame,
+            textvariable=self.location_var,
+            values=self._diary_service.get_location_presets(),
+            font=("Malgun Gothic", 10),
+        )
         self.location_entry.grid(row=1, column=0, sticky="ew", padx=(0, 12), pady=(5, 0))
 
         self.actual_weather_var = tk.StringVar(value=MANUAL_WEATHER_OPTIONS[0])
@@ -397,10 +425,22 @@ class AppGUI(tk.Tk):
         self.btn_secret_diary.configure(command=self._on_open_secret_diary_clicked)
         self.btn_exit_secret.configure(command=self._exit_secret_mode)
 
-        # 리스트박스 선택 및 필터 콤보박스 바인드
+        # 리스트박스 선택 바인드
         self.diary_listbox.bind("<<ListboxSelect>>", self._on_diary_selected)
-        self.filter_combo.bind("<<ComboboxSelected>>", lambda e: self._load_diary_list())
-        
+
+        # 필터 접기/펼치기 및 값 변경 시 목록 재조회
+        self.advanced_filter_toggle.configure(command=self._toggle_advanced_filter)
+        self.filter_var.trace_add("write", lambda *args: self._load_diary_list())
+        self.tier_filter_var.trace_add("write", lambda *args: self._load_diary_list())
+        self.location_filter_var.trace_add("write", lambda *args: self._load_diary_list())
+        self.title_keyword_var.trace_add("write", lambda *args: self._load_diary_list())
+        self.content_keyword_var.trace_add("write", lambda *args: self._load_diary_list())
+        self.summary_keyword_var.trace_add("write", lambda *args: self._load_diary_list())
+        self.date_filter_enabled_var.trace_add("write", lambda *args: self._load_diary_list())
+        self.filter_start_date_var.trace_add("write", lambda *args: self._load_diary_list())
+        self.filter_end_date_var.trace_add("write", lambda *args: self._load_diary_list())
+
+
         # 윈도우 크기 변경 시 캔버스 이미지 초기화용
         self.canvas.bind("<Configure>", self._init_draw_image_if_needed)
 
@@ -517,16 +557,112 @@ class AppGUI(tk.Tk):
 
     # ── 비즈니스 로직 및 이벤트 핸들러 ───────────────────────
 
+    def _toggle_advanced_filter(self):
+        """'필터' 버튼을 눌러 카테고리/학점/위치/키워드/기간 필터 영역을 접거나 편다."""
+        self._advanced_filter_shown = not self._advanced_filter_shown
+        if self._advanced_filter_shown:
+            self.advanced_filter_frame.pack(fill="x", pady=(0, 8), before=self._diary_list_card)
+            self.advanced_filter_toggle.configure(text="🔍 필터 ▴")
+        else:
+            self.advanced_filter_frame.pack_forget()
+            self.advanced_filter_toggle.configure(text="🔍 필터 ▾")
+
+    def _create_filter_vars(self) -> dict:
+        """카테고리/학점/위치/제목·본문·요약 키워드 필터용 StringVar를 새로 만들어 딕셔너리로 반환한다."""
+        return {
+            "category": tk.StringVar(value="전체보기"),
+            "tier": tk.StringVar(value="전체"),
+            "location": tk.StringVar(),
+            "title_keyword": tk.StringVar(),
+            "content_keyword": tk.StringVar(),
+            "summary_keyword": tk.StringVar(),
+        }
+
+    def _build_filter_widgets(self, parent, variables: dict, register_location_combo: bool = True):
+        """variables에 담긴 StringVar들로 카테고리/학점/위치/키워드 필터 위젯을 parent에 배치한다.
+
+        메인 목록의 필터 영역과 키워드 분석 다이얼로그가 이 메서드를 공유해서 쓴다.
+        register_location_combo=False로 호출하면(예: 팝업 다이얼로그) 위치 콤보박스를
+        _location_filter_combos에 등록하지 않는다 — 다이얼로그가 닫혀 위젯이 파괴된 뒤
+        _refresh_location_presets()가 죽은 위젯을 건드리는 것을 막기 위함이다.
+        """
+        ttk.Label(parent, text="카테고리(날씨/감정)", font=("Malgun Gothic", 9)).pack(anchor="w")
+        category_combo = ttk.Combobox(parent, textvariable=variables["category"], state="readonly", font=("Malgun Gothic", 9))
+        category_combo['values'] = ALL_FILTER_OPTIONS
+        category_combo.pack(fill="x", pady=(0, 6))
+
+        ttk.Label(parent, text="학점", font=("Malgun Gothic", 9)).pack(anchor="w")
+        tier_combo = ttk.Combobox(parent, textvariable=variables["tier"], state="readonly", font=("Malgun Gothic", 9))
+        tier_combo['values'] = EMOTION_TIER_OPTIONS
+        tier_combo.pack(fill="x", pady=(0, 6))
+
+        ttk.Label(parent, text="위치", font=("Malgun Gothic", 9)).pack(anchor="w")
+        location_combo = ttk.Combobox(
+            parent, textvariable=variables["location"], values=self._diary_service.get_location_presets(), font=("Malgun Gothic", 9)
+        )
+        location_combo.pack(fill="x", pady=(0, 6))
+        if register_location_combo:
+            self._location_filter_combos.append(location_combo)
+
+        ttk.Label(parent, text="제목 키워드", font=("Malgun Gothic", 9)).pack(anchor="w")
+        ttk.Entry(parent, textvariable=variables["title_keyword"], font=("Malgun Gothic", 9)).pack(fill="x", pady=(0, 6))
+
+        ttk.Label(parent, text="본문 키워드", font=("Malgun Gothic", 9)).pack(anchor="w")
+        ttk.Entry(parent, textvariable=variables["content_keyword"], font=("Malgun Gothic", 9)).pack(fill="x", pady=(0, 6))
+
+        ttk.Label(parent, text="요약 키워드", font=("Malgun Gothic", 9)).pack(anchor="w")
+        ttk.Entry(parent, textvariable=variables["summary_keyword"], font=("Malgun Gothic", 9)).pack(fill="x", pady=(0, 6))
+
+    def _diary_filter_from_vars(self, variables: dict) -> DiaryFilter:
+        """_create_filter_vars()가 만든 StringVar들의 현재 값으로 DiaryFilter를 구성한다."""
+        return DiaryFilter(
+            category=variables["category"].get(),
+            tier=variables["tier"].get(),
+            location=variables["location"].get(),
+            title_keyword=variables["title_keyword"].get(),
+            content_keyword=variables["content_keyword"].get(),
+            summary_keyword=variables["summary_keyword"].get(),
+        )
+
+    def _parse_filter_date(self, text: str) -> str:
+        """상세 필터의 날짜 입력값을 검증한다. 형식이 잘못됐으면 빈 문자열(필터 무시)을 반환한다."""
+        text = (text or "").strip()
+        if not text:
+            return ""
+        try:
+            datetime.strptime(text, "%Y-%m-%d")
+            return text
+        except ValueError:
+            return ""
+
+    def _build_diary_filter(self) -> DiaryFilter:
+        """필터 위젯의 현재 값으로 DiaryFilter를 구성한다."""
+        return self._diary_filter_from_vars(self._main_filter_vars)
+
+    def _refresh_location_presets(self):
+        """새로 추가된 위치 프리셋을 위치 입력/필터 콤보박스에 반영한다."""
+        presets = self._diary_service.get_location_presets()
+        self.location_entry['values'] = presets
+        for combo in self._location_filter_combos:
+            combo['values'] = presets
+
     def _load_diary_list(self):
-        """CSV에서 일기를 불러와 리스트박스 채우기 (카테고리 필터링 포함)."""
+        """CSV에서 일기를 불러와 리스트박스 채우기 (카테고리·상세 필터링 포함)."""
         self.diary_listbox.delete(0, tk.END)
         self._list_diary_ids.clear()
 
         filter_val = self.filter_var.get()
+        diary_filter = self._build_diary_filter()
+        date_from = ""
+        date_to = ""
+        if self.date_filter_enabled_var.get():
+            date_from = self._parse_filter_date(self.filter_start_date_var.get())
+            date_to = self._parse_filter_date(self.filter_end_date_var.get())
+
         if self._secret_mode:
-            diaries = self._diary_service.get_hidden_diaries(filter_value=filter_val)
+            diaries = self._diary_service.get_hidden_diaries(diary_filter, date_from, date_to)
         else:
-            diaries = self._diary_service.get_all_diaries(filter_value=filter_val)
+            diaries = self._diary_service.get_all_diaries(diary_filter, date_from, date_to)
         # 최신 날짜 순으로 정렬
         diaries.sort(key=lambda x: x.date, reverse=True)
 
@@ -534,17 +670,27 @@ class AppGUI(tk.Tk):
             date_str = diary.date
             title = diary.title or "제목 없음"
             weather = diary.weather.actual_weather or diary.weather.emoji
+            tier = diary.emotion_score.tier
             diary_id = diary.id
 
-            display_text = f" {weather}  {date_str}  |  {title}"
+            display_text = f" {weather}  {date_str}  [{tier}]  |  {title}"
             if diary.summary:
                 display_text += f"  📝 {truncate_summary(diary.summary)}"
             self.diary_listbox.insert(tk.END, display_text)
             self._list_diary_ids.append(diary_id)
 
-        if not self._list_diary_ids and filter_val != "전체보기":
-            self.statusbar.config(text=f"선택한 필터 '{filter_val}'에 해당하는 일기가 없습니다.", fg=COLOR_TEXT_SUB)
-        elif filter_val == "전체보기" and self._secret_mode:
+        has_active_filter = bool(
+            (filter_val and filter_val != "전체보기")
+            or diary_filter.tier
+            or diary_filter.location
+            or diary_filter.title_keyword
+            or diary_filter.content_keyword
+            or diary_filter.summary_keyword
+            or date_from or date_to
+        )
+        if not self._list_diary_ids and has_active_filter:
+            self.statusbar.config(text="선택한 필터 조건에 해당하는 일기가 없습니다.", fg=COLOR_TEXT_SUB)
+        elif not has_active_filter and self._secret_mode:
             self.statusbar.config(text="🔒 비밀 일기장 — 읽기 전용입니다. 나가려면 '나가기'를 눌러주세요.", fg=COLOR_TEXT_SUB)
 
     def _on_diary_selected(self, event=None):
@@ -828,7 +974,7 @@ class AppGUI(tk.Tk):
         """주간 마인드맵 분석 창 생성."""
         dialog = tk.Toplevel(self)
         dialog.title("기간별 키워드 분석 및 마인드맵 📊")
-        dialog.geometry("700x550")
+        dialog.geometry("700x820")
         dialog.configure(bg=COLOR_BG)
         dialog.transient(self)
         dialog.grab_set()
@@ -854,6 +1000,12 @@ class AppGUI(tk.Tk):
         btn_analyze = tk.Button(period_frame, text="키워드 분석")
         btn_analyze.grid(row=0, column=4, padx=15, pady=5)
         style_flat_button(btn_analyze, COLOR_PRIMARY)
+
+        # 카테고리/학점/위치/제목·본문·요약 키워드 필터 — 메인 목록과 동일한 위젯 생성 함수를 재사용
+        filter_row = ttk.Frame(dialog, style="TFrame", padding=(15, 0, 15, 15))
+        filter_row.pack(fill="x")
+        dialog_filter_vars = self._create_filter_vars()
+        self._build_filter_widgets(filter_row, dialog_filter_vars, register_location_combo=False)
 
         # 결과 영역 (Grid 1 row, 2 columns)
         result_frame = ttk.Frame(dialog, style="TFrame", padding=15)
@@ -908,9 +1060,10 @@ class AppGUI(tk.Tk):
                 messagebox.showerror("오류", "날짜 형식이 잘못되었습니다. (YYYY-MM-DD)")
                 return
 
-            entries = self._diary_service.get_diaries_by_date_range(start, end)
+            diary_filter = self._diary_filter_from_vars(dialog_filter_vars)
+            entries = self._diary_service.get_all_diaries(diary_filter, start, end)
             if not entries:
-                wc_display_label.config(text="해당 기간에 작성된 일기가 없습니다.", image="")
+                wc_display_label.config(text="해당 기간(및 필터 조건)에 작성된 일기가 없습니다.", image="")
                 # 테이블 비우기
                 for item in tree.get_children():
                     tree.delete(item)
@@ -1099,6 +1252,7 @@ class AppGUI(tk.Tk):
         def _on_save_success(diary):
             saved_diary_holder["diary"] = diary
             summary_var.set(diary.summary or "")
+            self._refresh_location_presets()
 
             if diary.is_hidden:
                 # 찢기 연출과 함께 편집 폼이 이미 초기화됐으므로, 메인 화면에 내용을 다시 반영하지 않는다

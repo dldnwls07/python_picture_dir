@@ -3,12 +3,14 @@ from domain.model.diary import Diary
 from domain.model.value_objects import (
     EMOTION_LABEL_TO_SCORE,
     EMOTION_LABEL_TO_WEATHER,
+    DiaryFilter,
     EmotionScore,
     Weather,
 )
 from domain.repository.diary_repository import DiaryRepository
 from infrastructure.persistence.csv_diary_repository import CSVDiaryRepository
 from infrastructure.persistence.secret_password_store import SecretPasswordStore
+from infrastructure.persistence.location_preset_store import LocationPresetStore
 from infrastructure.external.ai_service import AIService
 from engine.text_processor import TextProcessor
 from engine.keyword_analyzer import KeywordAnalyzer
@@ -22,22 +24,50 @@ class DiaryService:
         repository: Optional[DiaryRepository] = None,
         ai_service: Optional[AIService] = None,
         password_store: Optional[SecretPasswordStore] = None,
+        location_store: Optional[LocationPresetStore] = None,
     ):
         self._repository = repository or CSVDiaryRepository()
         self._ai_service = ai_service or AIService()
         self._password_store = password_store or SecretPasswordStore()
+        self._location_store = location_store or LocationPresetStore()
         self._text_processor = TextProcessor()
         self._keyword_analyzer = KeywordAnalyzer()
 
-    def get_all_diaries(self, filter_value: str = "전체보기") -> List[Diary]:
-        """모든 일기를 조회하며 필터 조건에 부합하는 일기 목록을 반환합니다 (비밀 일기 제외)."""
-        diaries = self._repository.find_all()
-        return [d for d in diaries if not d.is_hidden and d.matches_filter(filter_value)]
+    def _apply_date_range(self, diaries: List[Diary], date_from: str, date_to: str) -> List[Diary]:
+        if not date_from and not date_to:
+            return diaries
+        return [
+            d for d in diaries
+            if (not date_from or d.date >= date_from) and (not date_to or d.date <= date_to)
+        ]
 
-    def get_hidden_diaries(self, filter_value: str = "전체보기") -> List[Diary]:
-        """비밀 일기장 모드 전용 조회 — 숨겨진 일기만 필터 조건에 맞춰 반환합니다."""
+    def get_all_diaries(
+        self,
+        diary_filter: Optional[DiaryFilter] = None,
+        date_from: str = "",
+        date_to: str = "",
+    ) -> List[Diary]:
+        """모든 일기를 조회하며 필터/기간 조건에 부합하는 일기 목록을 반환합니다 (비밀 일기 제외)."""
+        f = diary_filter or DiaryFilter()
         diaries = self._repository.find_all()
-        return [d for d in diaries if d.is_hidden and d.matches_filter(filter_value)]
+        result = [d for d in diaries if not d.is_hidden and d.matches_filter(f)]
+        return self._apply_date_range(result, date_from, date_to)
+
+    def get_hidden_diaries(
+        self,
+        diary_filter: Optional[DiaryFilter] = None,
+        date_from: str = "",
+        date_to: str = "",
+    ) -> List[Diary]:
+        """비밀 일기장 모드 전용 조회 — 숨겨진 일기만 필터/기간 조건에 맞춰 반환합니다."""
+        f = diary_filter or DiaryFilter()
+        diaries = self._repository.find_all()
+        result = [d for d in diaries if d.is_hidden and d.matches_filter(f)]
+        return self._apply_date_range(result, date_from, date_to)
+
+    def get_location_presets(self) -> List[str]:
+        """위치 입력 콤보박스에 채울 프리셋 목록(기본값 + 사용자 추가분)을 반환합니다."""
+        return self._location_store.get_all()
 
     def get_diary_by_id(self, diary_id: int) -> Optional[Diary]:
         """ID로 특정 일기를 조회합니다."""
@@ -185,6 +215,8 @@ class DiaryService:
                 # CSV 저장 성공 시에만 기존 이미지 파일 삭제 진행
                 if image_to_delete_on_success:
                     self._repository.delete_image(image_to_delete_on_success)
+                if location_name:
+                    self._location_store.add(location_name)
                 return True, diary
             else:
                 # CSV 저장 실패 시 새로 만든 이미지를 롤백(삭제)

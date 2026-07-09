@@ -21,6 +21,7 @@ pip-delete-this-directory.txt
 data/diary_data.csv
 data/images/
 data/password.txt
+data/location.txt
 
 # UI generated files
 ui/*.py

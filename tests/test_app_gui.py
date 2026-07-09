@@ -51,7 +51,7 @@ class AppGuiTest(unittest.TestCase):
         })
 
         self.window.titleEdit.setText("qt diary")
-        self.window.locationLineEdit.setText("Seoul")
+        self.window.locationLineEdit.setCurrentText("Seoul")
         self.window.actualWeatherComboBox.setCurrentText("🌧️ 비")
         self.window.emotionComboBox.setCurrentText("행복했어요")
         self.window.contentEdit.setPlainText("오늘은 정말 좋았다")

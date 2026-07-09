@@ -5,6 +5,7 @@
 from domain.model.value_objects import (
     ALL_FILTER_OPTIONS,
     DEFAULT_EMOTION,
+    EMOTION_TIER_OPTIONS,
     MANUAL_EMOTION_OPTIONS,
     MANUAL_WEATHER_OPTIONS,
 )

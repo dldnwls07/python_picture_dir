@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional
-from domain.model.value_objects import EmotionScore, Weather
+from domain.model.value_objects import DiaryFilter, EmotionScore, Weather
 
 class Diary:
     """일기 도메인 엔티티 (Aggregate Root)"""
@@ -31,26 +31,42 @@ class Diary:
         self.is_hidden = is_hidden
         self.summary = summary
 
-    def matches_filter(self, filter_value: str) -> bool:
-        """일기가 필터 조건에 맞는지 확인."""
-        if not filter_value or filter_value == "전체보기":
+    def matches_filter(self, diary_filter: DiaryFilter) -> bool:
+        """일기가 다중 조건 필터(DiaryFilter)에 모두 부합하는지 확인한다 (AND 조합)."""
+        if not self._matches_category(diary_filter.category):
+            return False
+        if diary_filter.tier and self.emotion_score.tier != diary_filter.tier:
+            return False
+        if diary_filter.location and diary_filter.location.lower() not in self.weather.location.lower():
+            return False
+        if diary_filter.title_keyword and diary_filter.title_keyword.lower() not in self.title.lower():
+            return False
+        if diary_filter.content_keyword and diary_filter.content_keyword.lower() not in self.content.lower():
+            return False
+        if diary_filter.summary_keyword and diary_filter.summary_keyword.lower() not in (self.summary or "").lower():
+            return False
+        return True
+
+    def _matches_category(self, category: str) -> bool:
+        """기존 filterComboBox 카테고리(날씨 이모지 라벨 / 긍정·중립·부정 / 전체보기) 조건을 검사한다."""
+        if not category or category == "전체보기":
             return True
 
         # 날씨 필터 검사
         from domain.model.value_objects import WEATHER_LABEL_TO_EMOJI
-        if filter_value in WEATHER_LABEL_TO_EMOJI:
-            target_emoji = WEATHER_LABEL_TO_EMOJI[filter_value]
+        if category in WEATHER_LABEL_TO_EMOJI:
+            target_emoji = WEATHER_LABEL_TO_EMOJI[category]
             # actual_weather에 콤마가 여러 개 들어갈 수 있으므로 split 처리
             emojis = [w.strip() for w in self.weather.actual_weather.split(",")]
             return target_emoji in emojis
 
         # 감정 필터 검사
         score = self.emotion_score.value
-        if filter_value == "긍정 일기":
+        if category == "긍정 일기":
             return score > 0
-        if filter_value == "중립 일기":
+        if category == "중립 일기":
             return score == 0
-        if filter_value == "부정 일기":
+        if category == "부정 일기":
             return score < 0
 
         return True

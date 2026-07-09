@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QDialog, QMessageBox, QListWidgetItem,
     QLabel, QComboBox, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QTableWidgetItem, QHeaderView, QScrollArea,
-    QCheckBox, QInputDialog, QGraphicsOpacityEffect,
+    QCheckBox, QInputDialog, QGraphicsOpacityEffect, QDateEdit,
 )
 from PyQt5.QtCore import (
     QDate, Qt, QThread, pyqtSignal, QEvent, QVariantAnimation, QPropertyAnimation,
@@ -30,10 +30,12 @@ configure_runtime(PROJECT_ROOT)
 from diary_categories import (
     ALL_FILTER_OPTIONS,
     DEFAULT_EMOTION,
+    EMOTION_TIER_OPTIONS,
     MANUAL_EMOTION_OPTIONS,
     MANUAL_WEATHER_OPTIONS,
     truncate_summary,
 )
+from domain.model.value_objects import DiaryFilter
 from application.service.diary_service import DiaryService
 
 # .ui 파일 경로
@@ -224,16 +226,59 @@ class AppGUI(QMainWindow):
         # 삭제 버튼 초기 비활성화
         self.deleteButton.setEnabled(False)
 
-        # Tk 버전과 동일한 필터 UI를 왼쪽 목록 상단에 추가한다.
-        filter_label = QLabel("  필터")
-        self.filterComboBox = QComboBox()
-        self.filterComboBox.addItems(ALL_FILTER_OPTIONS)
-        self.leftLayout.insertWidget(1, filter_label)
-        self.leftLayout.insertWidget(2, self.filterComboBox)
+        # 필터(카테고리/학점/위치/키워드 3종/기간) — 한 곳에 모아서 접었다 펼 수 있는 영역
+        self.filterToggle = QPushButton("🔍 필터 ▾")
+        self.filterToggle.setCheckable(True)
+        self.leftLayout.insertWidget(1, self.filterToggle)
+
+        self.filterContainer = QWidget()
+        filter_layout = QVBoxLayout(self.filterContainer)
+        filter_layout.setContentsMargins(0, 4, 0, 4)
+        filter_layout.setSpacing(4)
+
+        self._mainFilterWidgets = self._create_filter_widgets()
+        self.filterComboBox = self._mainFilterWidgets["category"]
+        self.tierFilterComboBox = self._mainFilterWidgets["tier"]
+        self.locationFilterComboBox = self._mainFilterWidgets["location"]
+        self.titleKeywordEdit = self._mainFilterWidgets["title_keyword"]
+        self.contentKeywordEdit = self._mainFilterWidgets["content_keyword"]
+        self.summaryKeywordEdit = self._mainFilterWidgets["summary_keyword"]
+
+        filter_layout.addWidget(QLabel("카테고리(날씨/감정)"))
+        filter_layout.addWidget(self.filterComboBox)
+        filter_layout.addWidget(QLabel("학점"))
+        filter_layout.addWidget(self.tierFilterComboBox)
+        filter_layout.addWidget(QLabel("위치"))
+        filter_layout.addWidget(self.locationFilterComboBox)
+        filter_layout.addWidget(self.titleKeywordEdit)
+        filter_layout.addWidget(self.contentKeywordEdit)
+        filter_layout.addWidget(self.summaryKeywordEdit)
+
+        date_filter_row = QHBoxLayout()
+        self.dateFilterCheckBox = QCheckBox("기간")
+        self.filterStartDateEdit = QDateEdit()
+        self.filterStartDateEdit.setCalendarPopup(True)
+        self.filterStartDateEdit.setDisplayFormat("yyyy-MM-dd")
+        self.filterStartDateEdit.setDate(QDate.currentDate().addMonths(-1))
+        self.filterEndDateEdit = QDateEdit()
+        self.filterEndDateEdit.setCalendarPopup(True)
+        self.filterEndDateEdit.setDisplayFormat("yyyy-MM-dd")
+        self.filterEndDateEdit.setDate(QDate.currentDate())
+        date_filter_row.addWidget(self.dateFilterCheckBox)
+        date_filter_row.addWidget(self.filterStartDateEdit, 1)
+        date_filter_row.addWidget(QLabel("~"))
+        date_filter_row.addWidget(self.filterEndDateEdit, 1)
+        filter_layout.addLayout(date_filter_row)
+
+        self.filterContainer.setVisible(False)
+        self.leftLayout.insertWidget(2, self.filterContainer)
 
         # 위치 / 현재 날씨 / 오늘 감정 입력
-        self.locationLineEdit = QLineEdit()
+        self.locationLineEdit = QComboBox()
+        self.locationLineEdit.setEditable(True)
         self.locationLineEdit.setPlaceholderText("위치를 입력하세요")
+        self.locationLineEdit.addItems(self._diary_service.get_location_presets())
+        self.locationLineEdit.setCurrentText("")
         self.actualWeatherComboBox = QComboBox()
         self.actualWeatherComboBox.addItems(MANUAL_WEATHER_OPTIONS)
         self.actualWeatherComboBox2 = QComboBox()
@@ -362,9 +407,20 @@ class AppGUI(QMainWindow):
         self.secretDiaryButton.clicked.connect(self._on_open_secret_diary_clicked)
         self.exitSecretModeButton.clicked.connect(self._exit_secret_mode)
         self.diaryListWidget.currentItemChanged.connect(self._on_diary_selected)
-        self.filterComboBox.currentTextChanged.connect(self._load_diary_list)
         self.colorComboBox.currentTextChanged.connect(self.drawingCanvas.set_pen_color)
         self.clearCanvasButton.clicked.connect(self._clear_canvas)
+
+        # 필터 접기/펼치기 및 값 변경 시 목록 재조회
+        self.filterToggle.toggled.connect(self._on_filter_toggled)
+        self.filterComboBox.currentTextChanged.connect(self._load_diary_list)
+        self.tierFilterComboBox.currentTextChanged.connect(self._load_diary_list)
+        self.locationFilterComboBox.currentTextChanged.connect(self._load_diary_list)
+        self.titleKeywordEdit.textChanged.connect(self._load_diary_list)
+        self.contentKeywordEdit.textChanged.connect(self._load_diary_list)
+        self.summaryKeywordEdit.textChanged.connect(self._load_diary_list)
+        self.dateFilterCheckBox.toggled.connect(self._load_diary_list)
+        self.filterStartDateEdit.dateChanged.connect(self._load_diary_list)
+        self.filterEndDateEdit.dateChanged.connect(self._load_diary_list)
 
         # 목록 항목에 마우스를 올리면 잘린 요약 대신 전문이 보이도록 확장
         self.diaryListWidget.setWordWrap(True)
@@ -470,8 +526,14 @@ class AppGUI(QMainWindow):
 
     def _on_secret_color_changed(self, color: QColor):
         hex_color = color.name()
-        self.leftPanel.setStyleSheet(f"background-color: {hex_color};")
-        self.rightPanel.setStyleSheet(f"background-color: {hex_color};")
+        # 셀렉터 없이 "background-color"만 주면 하위 QPushButton들의 고유 배경/글자색 규칙까지
+        # 덮어써서 버튼이 배경에 파묻혀 안 보이게 되므로, QFrame/QPushButton을 명시해서 지정한다.
+        style = f"""
+        QFrame {{ background-color: {hex_color}; }}
+        QPushButton {{ color: white; }}
+        """
+        self.leftPanel.setStyleSheet(style)
+        self.rightPanel.setStyleSheet(style)
 
     def _flip_secret_color_direction(self):
         anim = self._secret_color_anim
@@ -608,7 +670,7 @@ class AppGUI(QMainWindow):
         date_str = self.dateEdit.date().toString("yyyy-MM-dd")
         title = self.titleEdit.text().strip()
         content = self.contentEdit.toPlainText().strip()
-        location_name = self.locationLineEdit.text().strip()
+        location_name = self.locationLineEdit.currentText().strip()
 
         # 날씨 1, 2 처리
         w_val1 = self.actualWeatherComboBox.currentText().strip()
@@ -703,7 +765,7 @@ class AppGUI(QMainWindow):
         self._current_diary_id = None
         self.dateEdit.setDate(QDate.currentDate())
         self.titleEdit.clear()
-        self.locationLineEdit.clear()
+        self.locationLineEdit.setCurrentText("")
         self.actualWeatherComboBox.setCurrentText(MANUAL_WEATHER_OPTIONS[0])
         self.actualWeatherComboBox2.setCurrentText("선택안함")
         self.emotionComboBox.setCurrentText(DEFAULT_EMOTION)
@@ -734,7 +796,7 @@ class AppGUI(QMainWindow):
             self._current_diary_id = diary_id
             self.dateEdit.setDate(QDate.fromString(diary.date, "yyyy-MM-dd"))
             self.titleEdit.setText(diary.title)
-            self.locationLineEdit.setText(diary.weather.location)
+            self.locationLineEdit.setCurrentText(diary.weather.location)
             actual_weather_val = diary.weather.actual_weather
             actual_weather_text_val = diary.weather.actual_weather_text
 
@@ -813,6 +875,69 @@ class AppGUI(QMainWindow):
         self.weatherLabel.setText(result["weather_emoji"])
         self.scoreLabel.setText(f"감정 상태: {result['emotion_label']} ({result['score']}점)")
 
+    def _on_filter_toggled(self, checked: bool):
+        """'필터' 버튼을 눌러 카테고리/학점/위치/키워드/기간 필터 영역을 접거나 편다."""
+        self.filterContainer.setVisible(checked)
+        self.filterToggle.setText("🔍 필터 ▴" if checked else "🔍 필터 ▾")
+
+    def _create_filter_widgets(self) -> dict:
+        """카테고리/학점/위치/제목·본문·요약 키워드 필터 위젯을 새로 만들어 딕셔너리로 반환한다.
+
+        메인 목록의 필터 영역과 키워드 분석 다이얼로그가 이 메서드를 공유해서 쓴다.
+        """
+        widgets = {}
+
+        widgets["category"] = QComboBox()
+        widgets["category"].addItems(ALL_FILTER_OPTIONS)
+
+        widgets["tier"] = QComboBox()
+        widgets["tier"].addItems(EMOTION_TIER_OPTIONS)
+
+        widgets["location"] = QComboBox()
+        widgets["location"].setEditable(True)
+        widgets["location"].addItem("")
+        widgets["location"].addItems(self._diary_service.get_location_presets())
+        widgets["location"].setCurrentText("")
+
+        widgets["title_keyword"] = QLineEdit()
+        widgets["title_keyword"].setPlaceholderText("제목 키워드")
+
+        widgets["content_keyword"] = QLineEdit()
+        widgets["content_keyword"].setPlaceholderText("본문 키워드")
+
+        widgets["summary_keyword"] = QLineEdit()
+        widgets["summary_keyword"].setPlaceholderText("요약 키워드")
+
+        return widgets
+
+    def _diary_filter_from_widgets(self, widgets: dict) -> DiaryFilter:
+        """_create_filter_widgets()가 만든 위젯들의 현재 값으로 DiaryFilter를 구성한다."""
+        return DiaryFilter(
+            category=widgets["category"].currentText(),
+            tier=widgets["tier"].currentText(),
+            location=widgets["location"].currentText(),
+            title_keyword=widgets["title_keyword"].text(),
+            content_keyword=widgets["content_keyword"].text(),
+            summary_keyword=widgets["summary_keyword"].text(),
+        )
+
+    def _refresh_location_presets(self):
+        """새로 추가된 위치 프리셋을 위치 입력/필터 콤보박스에 반영한다."""
+        presets = self._diary_service.get_location_presets()
+        for combo in (self.locationLineEdit, self.locationFilterComboBox):
+            current = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            if combo is self.locationFilterComboBox:
+                combo.addItem("")
+            combo.addItems(presets)
+            combo.setCurrentText(current)
+            combo.blockSignals(False)
+
+    def _build_diary_filter(self) -> DiaryFilter:
+        """메인 목록 필터 위젯의 현재 값으로 DiaryFilter를 구성한다."""
+        return self._diary_filter_from_widgets(self._mainFilterWidgets)
+
     def _load_diary_list(self):
         """CSV에서 일기 목록을 읽어 왼쪽 리스트에 표시한다.
 
@@ -820,12 +945,18 @@ class AppGUI(QMainWindow):
         """
         self._reset_hovered_diary_item()
         self.diaryListWidget.clear()
-        filter_value = self.filterComboBox.currentText() if hasattr(self, "filterComboBox") else "전체보기"
+
+        diary_filter = self._build_diary_filter()
+        date_from = ""
+        date_to = ""
+        if self.dateFilterCheckBox.isChecked():
+            date_from = self.filterStartDateEdit.date().toString("yyyy-MM-dd")
+            date_to = self.filterEndDateEdit.date().toString("yyyy-MM-dd")
 
         if self._secret_mode:
-            diaries = self._diary_service.get_hidden_diaries(filter_value=filter_value)
+            diaries = self._diary_service.get_hidden_diaries(diary_filter, date_from, date_to)
         else:
-            diaries = self._diary_service.get_all_diaries(filter_value=filter_value)
+            diaries = self._diary_service.get_all_diaries(diary_filter, date_from, date_to)
         # 최신순 정렬
         diaries.sort(key=lambda x: x.date, reverse=True)
 
@@ -833,9 +964,10 @@ class AppGUI(QMainWindow):
             date_str = diary.date
             title = diary.title or "제목 없음"
             weather = diary.weather.actual_weather or diary.weather.emoji
+            tier = diary.emotion_score.tier
             diary_id = diary.id
 
-            base_text = f"{weather} {date_str}\n     {title}"
+            base_text = f"{weather} {date_str} [{tier}]\n     {title}"
             preview_text = base_text
             full_text = base_text
             if diary.summary:
@@ -849,11 +981,18 @@ class AppGUI(QMainWindow):
             item.setData(Qt.UserRole + 2, preview_text)
             self.diaryListWidget.addItem(item)
 
-        if self.diaryListWidget.count() == 0 and filter_value != "전체보기":
-            self._set_status_message(
-                f"선택한 필터 '{filter_value}'에 해당하는 일기가 없습니다."
-            )
-        elif filter_value == "전체보기":
+        has_active_filter = bool(
+            (diary_filter.category and diary_filter.category != "전체보기")
+            or diary_filter.tier
+            or diary_filter.location
+            or diary_filter.title_keyword
+            or diary_filter.content_keyword
+            or diary_filter.summary_keyword
+            or date_from or date_to
+        )
+        if self.diaryListWidget.count() == 0 and has_active_filter:
+            self._set_status_message("선택한 필터 조건에 해당하는 일기가 없습니다.")
+        elif not has_active_filter:
             if self._secret_mode:
                 self._set_status_message("🔒 비밀 일기장 — 읽기 전용입니다. 나가려면 '나가기'를 눌러주세요.")
             else:
@@ -1012,6 +1151,7 @@ class AppGUI(QMainWindow):
             action = "수정" if save_kwargs.get("diary_id") is not None else "저장"
             if success and diary:
                 saved_diary_holder["diary"] = diary
+                self._refresh_location_presets()
                 if diary.is_hidden:
                     # 찢기 연출과 함께 편집 폼이 이미 초기화됐으므로, 메인 화면에 내용을 다시 반영하지 않는다
                     self._load_diary_list()
@@ -1111,6 +1251,27 @@ class AppGUI(QMainWindow):
         dialog.startDateEdit.setDate(today.addDays(-7))
         dialog.endDateEdit.setDate(today)
 
+        # 카테고리/학점/위치/제목·본문·요약 키워드 필터 — 메인 목록과 동일한 위젯 생성 함수를 재사용
+        dialog.filterWidgets = self._create_filter_widgets()
+        filter_layout = QVBoxLayout()
+
+        category_row = QHBoxLayout()
+        category_row.addWidget(QLabel("카테고리"))
+        category_row.addWidget(dialog.filterWidgets["category"], 1)
+        category_row.addWidget(QLabel("학점"))
+        category_row.addWidget(dialog.filterWidgets["tier"], 1)
+        category_row.addWidget(QLabel("위치"))
+        category_row.addWidget(dialog.filterWidgets["location"], 1)
+        filter_layout.addLayout(category_row)
+
+        keyword_row = QHBoxLayout()
+        keyword_row.addWidget(dialog.filterWidgets["title_keyword"])
+        keyword_row.addWidget(dialog.filterWidgets["content_keyword"])
+        keyword_row.addWidget(dialog.filterWidgets["summary_keyword"])
+        filter_layout.addLayout(keyword_row)
+
+        dialog.mainLayout.insertLayout(2, filter_layout)
+
         # 분석 버튼 이벤트
         dialog.analyzeButton.clicked.connect(
             lambda: self._run_keyword_analysis(dialog)
@@ -1122,12 +1283,13 @@ class AppGUI(QMainWindow):
         """키워드 분석을 실행하고 결과를 다이얼로그에 표시한다."""
         start = dialog.startDateEdit.date().toString("yyyy-MM-dd")
         end = dialog.endDateEdit.date().toString("yyyy-MM-dd")
+        diary_filter = self._diary_filter_from_widgets(dialog.filterWidgets)
 
-        # 기간 내 일기 데이터 읽기
-        entries = self._diary_service.get_diaries_by_date_range(start, end)
+        # 기간/필터 조건에 맞는 일기 데이터 읽기
+        entries = self._diary_service.get_all_diaries(diary_filter, start, end)
 
         if not entries:
-            dialog.wordcloudLabel.setText("해당 기간에 작성된 일기가 없습니다.")
+            dialog.wordcloudLabel.setText("해당 기간(및 필터 조건)에 작성된 일기가 없습니다.")
             dialog.keywordTable.setRowCount(0)
             return
 
