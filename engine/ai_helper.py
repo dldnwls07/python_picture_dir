@@ -99,13 +99,17 @@ class AIHelper:
             }
         }
 
-        models_to_try = [self.model, "gemini-2.5-flash", "gemini-flash-latest"]
+        # 중복 없는 모델 목록 생성
+        models_to_try = []
+        for m in [self.model, "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash"]:
+            if m not in models_to_try:
+                models_to_try.append(m)
         last_error = None
 
         for model_name in models_to_try:
             url = self.endpoint.format(model_name) + f"?key={self.api_key}"
             try:
-                response = requests.post(url, headers=headers, json=payload, timeout=20)
+                response = requests.post(url, headers=headers, json=payload, timeout=10)
                 response.raise_for_status()
                 res_data = response.json()
                 
@@ -115,7 +119,16 @@ class AIHelper:
                     raise RuntimeError("Gemini API가 빈 응답을 반환했습니다.")
                     
                 text_response = candidates[0].get("content", {}).get("parts", [])[0].get("text", "{}")
-                result = json.loads(text_response.strip())
+                text_clean = text_response.strip()
+                if text_clean.startswith("```"):
+                    # 마크다운 코드 블록 래퍼 제거
+                    lines = text_clean.splitlines()
+                    if len(lines) >= 2 and lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if len(lines) >= 1 and lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    text_clean = "\n".join(lines).strip()
+                result = json.loads(text_clean)
                 
                 # 안전하게 포맷 확인
                 if "summary" not in result or "empathy" not in result or "drawing_analysis" not in result:

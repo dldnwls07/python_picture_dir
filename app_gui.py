@@ -127,6 +127,26 @@ class DrawingCanvas(QWidget):
         return self._dirty
 
 
+from PyQt5.QtCore import QThread, pyqtSignal
+
+class AIWorker(QThread):
+    finished_signal = pyqtSignal(dict)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, service, kwargs):
+        super().__init__()
+        self.service = service
+        self.kwargs = kwargs
+
+    def run(self):
+        try:
+            result = self.service.analyze_ai(**self.kwargs)
+            self.finished_signal.emit(result)
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            self.error_signal.emit(str(exc))
+
 class AppGUI(QMainWindow):
     """감정 일기장 메인 윈도우 클래스."""
 
@@ -655,7 +675,7 @@ class AppGUI(QMainWindow):
             }
             QLabel {
                 color: #cdd6f4;
-                font-family: "Apple SD Gothic Neo", "-apple-system", sans-serif;
+                font-family: "Apple SD Gothic Neo", "Helvetica Neue", sans-serif;
             }
             QScrollArea {
                 border: none;
@@ -777,59 +797,46 @@ class AppGUI(QMainWindow):
         e2 = self.emotionComboBox2.currentText().strip()
         emotion = f"{e1}, {e2}" if e2 and e2 != "선택안함" else e1
 
-        # 스레드 완료 콜백 — 메인 스레드에서 실행되어야 함
-        _result_holder = {}
-
-        def _update_ui():
-            """QTimer 콜백: 메인(GUI) 스레드에서 결과 렌더링."""
+        def _on_finished(result):
             if not dialog.isVisible():
                 return
-            if "error" in _result_holder:
-                import traceback
-                traceback.print_exc()
-                status_label.setText(f"❌ AI 분석에 실패했습니다:\n\n{str(_result_holder['error'])}")
-                status_label.setStyleSheet("color: #f38ba8; font-size: 13px; line-height: 1.5;")
-                ok_button.setEnabled(True)
-            else:
-                result = _result_holder["result"]
-                # 로딩 상태 숨기기
-                status_label.setVisible(False)
+            # 로딩 상태 숨기기
+            status_label.setVisible(False)
 
-                # 결과 데이터 바인딩 및 표시
-                summary_text.setText(result["summary"])
-                summary_text.setVisible(True)
-                summary_title.setVisible(True)
+            # 결과 데이터 바인딩 및 표시
+            summary_text.setText(result["summary"])
+            summary_text.setVisible(True)
+            summary_title.setVisible(True)
 
-                empathy_text.setText(result["empathy"])
-                empathy_text.setVisible(True)
-                empathy_title.setVisible(True)
+            empathy_text.setText(result["empathy"])
+            empathy_text.setVisible(True)
+            empathy_title.setVisible(True)
 
-                drawing_text.setText(result["drawing_analysis"])
+            drawing_text.setText(result.get("drawing_analysis", ""))
+            if result.get("drawing_analysis"):
                 drawing_text.setVisible(True)
                 drawing_title.setVisible(True)
 
-                ok_button.setEnabled(True)
+            ok_button.setEnabled(True)
 
-        def _worker():
-            """백그라운드 스레드: 블로킹 네트워크 요청 실행."""
-            try:
-                result = self._diary_service.analyze_ai(
-                    date=date_str,
-                    content=content,
-                    location=location,
-                    weather=weather,
-                    emotion=emotion,
-                    image_base64=image_base64
-                )
-                _result_holder["result"] = result
-            except Exception as exc:
-                _result_holder["error"] = exc
-            # 메인 스레드에서 UI 갱신 (QTimer.singleShot은 스레드-세이프)
-            QTimer.singleShot(0, _update_ui)
+        def _on_error(err_str):
+            if not dialog.isVisible():
+                return
+            status_label.setText(f"❌ AI 분석에 실패했습니다:\n\n{err_str}")
+            status_label.setStyleSheet("color: #f38ba8; font-size: 13px; line-height: 1.5;")
+            ok_button.setEnabled(True)
 
-        # 백그라운드 스레드로 AI 분석 실행 (GUI 이벤트 루프 비차단)
-        thread = threading.Thread(target=_worker, daemon=True)
-        thread.start()
+        self._ai_worker = AIWorker(self._diary_service, {
+            "date": date_str,
+            "content": content,
+            "location": location,
+            "weather": weather,
+            "emotion": emotion,
+            "image_base64": image_base64
+        })
+        self._ai_worker.finished_signal.connect(_on_finished)
+        self._ai_worker.error_signal.connect(_on_error)
+        self._ai_worker.start()
 
         dialog.exec_()
 
