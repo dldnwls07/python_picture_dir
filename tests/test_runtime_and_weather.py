@@ -9,7 +9,7 @@ from runtime_env import configure_runtime
 
 class RuntimeAndWeatherTest(unittest.TestCase):
     def test_configure_runtime_loads_dotenv(self):
-        temp_dir = tempfile.mkdtemp(prefix="runtime_env_test_", dir="/private/tmp")
+        temp_dir = tempfile.mkdtemp(prefix="runtime_env_test_")
         env_path = os.path.join(temp_dir, ".env")
         with open(env_path, "w", encoding="utf-8") as env_file:
             env_file.write("WEATHER_PROVIDER=kma\n")

@@ -8,7 +8,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5.QtWidgets import QApplication
 
 from app_gui import AppGUI
-from manager.file_manager import FileManager
+from infrastructure.persistence.csv_diary_repository import CSVDiaryRepository
+from application.service.diary_service import DiaryService
 
 
 class AppGuiTest(unittest.TestCase):
@@ -17,9 +18,10 @@ class AppGuiTest(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        self.temp_dir = tempfile.mkdtemp(prefix="app_gui_test_", dir="/private/tmp")
+        self.temp_dir = tempfile.mkdtemp(prefix="app_gui_test_")
         self.window = AppGUI(start_weather_thread=False)
-        self.window._file_manager = FileManager(os.path.join(self.temp_dir, "diary.csv"))
+        self.repo = CSVDiaryRepository(os.path.join(self.temp_dir, "diary.csv"))
+        self.window._diary_service = DiaryService(repository=self.repo)
 
     def test_tabs_and_filter_exist(self):
         self.assertIsNotNone(self.window.drawingCanvas)
@@ -37,7 +39,7 @@ class AppGuiTest(unittest.TestCase):
 
         self.window.on_save_clicked()
 
-        rows = self.window._file_manager.read_all_csv()
+        rows = self.repo._read_all_rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["title"], "qt diary")
         self.assertEqual(rows[0]["location_name"], "Seoul")
@@ -69,6 +71,8 @@ class AppGuiTest(unittest.TestCase):
         # 본문 기입 후 정상 작동 테스트
         self.window.contentEdit.setPlainText("오늘 정말 신나는 일상을 보냈다.")
         self.window.show_ai_empathy_window()
+        if hasattr(self.window, "_ai_worker"):
+            self.window._ai_worker.wait()
         self.window._ai_helper.analyze_diary.assert_called_once()
 
 

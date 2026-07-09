@@ -169,15 +169,7 @@ class AppGUI(QMainWindow):
         self._connect_events()
         self._load_diary_list()
 
-    @property
-    def _file_manager(self):
-        return self._diary_service._repository
 
-    @_file_manager.setter
-    def _file_manager(self, value):
-        from infrastructure.persistence.csv_diary_repository import CSVDiaryRepository
-        repo = CSVDiaryRepository(value.filepath)
-        self._diary_service = DiaryService(repository=repo)
 
     @property
     def _ai_helper(self):
