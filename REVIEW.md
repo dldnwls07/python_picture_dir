@@ -1,170 +1,75 @@
 # 프로젝트 리뷰 — 감정 일기장 (Emotion Diary)
 
-리뷰 시점: 2026-07-09, `main` 브랜치 커밋 `a6b4830`.
+리뷰 시점: 2026-07-09, `main` 브랜치 HEAD `0d12861` (원격 `origin/main`과 동일).
+이전 리뷰(커밋 `a6b4830` 기준) 이후 4개 커밋이 추가로 반영되어 재검토함.
 
-Tkinter와 PyQt5를 모두 지원하는 듀얼 GUI 개인 일기장 앱으로, CSV 기반 저장,
-선택적 그림판 캔버스, 날씨/감정 태깅, 키워드/워드클라우드 분석, Gemini 기반
-"AI 공감" 요약 기능을 제공한다. 최근 도메인 계층이 DDD(`domain/`,
-`application/`, `infrastructure/`) 방식으로 리팩터링되었다. 전반적으로 새
-레이어링은 깔끔하고 두 GUI가 이를 공유하도록 잘 정리되었지만, 더 진행하기
-전에 몇 가지 저장소(git) 위생 문제와 남아있는 레거시 코드를 정리할 필요가
-있다.
+## 이전 리뷰 이후 달라진 점 요약
 
-## 심각(Critical)
+지난 리뷰에서 지적한 항목 대부분이 실제로 처리되었다:
 
-### 1. `data/diary_data.csv`가 git에 커밋되어 있고, 실제 일기 내용과 평문 비밀번호가 들어있음
-`.gitignore`에 `data/diary_data.csv`가 등록되어 있지만, 이 규칙이 추가되기
-전에 이미 추적(tracked)되고 있던 파일이다 (`git log -- data/diary_data.csv`를
-보면 최근 DDD 리팩터링을 포함해 6개 커밋에 걸쳐 변경되어 왔다). `git
-status`는 해당 파일이 클린(clean) 상태라고 보여주는데, 이는 **현재 작업
-사본에 들어있는 내용이 곧 커밋 히스토리에도 들어있다는 뜻**이다 — 지금
-시점에는 실제로 작성된 것으로 보이는 일기 항목 하나와, `12345678910`이라는
-평문 비밀번호 값이 들어있다 (SHA-256 해싱이 도입되기 이전 데이터이긴 하지만,
-여전히 저장소 히스토리와 현재 HEAD에 그대로 남아있다).
+| # | 이전 지적 사항 | 현재 상태 |
+|---|---|---|
+| 5 | `engine/emotion_engine.py`, `data/emotion_dict.py` 죽은 코드 | ✅ 삭제됨 (`0d12861`) |
+| 6 | `manager/file_manager.py`가 `CSVDiaryRepository`와 중복 | ✅ 삭제됨, `tests/test_csv_diary_repository.py`로 대체 (`0d12861`) |
+| 7 | `AppGUI._file_manager` property/setter가 테스트용 우회 통로 | ✅ 제거됨. 테스트는 이제 `self.window._diary_service = DiaryService(repository=...)`로 직접 주입 |
+| 8 | 테스트가 macOS 전용 `/private/tmp` 하드코딩 | ✅ `test_app_gui.py`, `test_runtime_and_weather.py`에서 제거됨 |
+| — | AI 분석이 수동 `threading.Thread` + `QTimer.singleShot`으로 결과를 메인 스레드에 전달 | ✅ `QThread`/`pyqtSignal` 기반 `AIWorker`로 교체 (`6f03d9e`) — 더 관용적인 PyQt 패턴 |
+| — | `ai_helper.py`의 Gemini 모델 목록에 중복 가능성, 마크다운 코드펜스로 감싸진 JSON 응답 파싱 실패 가능성 | ✅ 모델 목록 중복 제거 로직 추가, ` ```json ` 코드펜스 스트리핑 추가 (`6f03d9e`) |
 
-`is_hidden`/`password`는 일기 항목을 비공개로 유지하기 위한 기능인데, 그
-값이 git에 — 그리고 어딘가에 push된 적이 있다면 원격 저장소에도 — 남아있다면
-해당 기능의 의미가 완전히 무력화되고 사용자의 실제 비밀번호가 유출된다.
+이 부분들은 다시 짚을 필요 없이 잘 처리된 것으로 판단한다.
 
-**조치:** `git rm --cached data/diary_data.csv`로 작업 파일은 남기고 git
-추적만 해제한다. 이 저장소가 어딘가에 push된 적이 있다면 히스토리에서도
-완전히 제거하는 것을 고려한다 (`git filter-repo` / BFG). `data/images/` 하위
-파일들도 동일하게 처리해야 한다.
+## 아직 남아있는 문제 (재확인 필요)
 
-### 2. `.venv/` (7,751개 파일)가 git에 커밋되어 있음
-`.gitignore`에 `.venv/`가 있지만, `git ls-files | grep '^\.venv/'`를 실행하면
-수천 개의 PyQt5/matplotlib site-package 파일이 나온다. 이는 클론과 diff마다
-저장소 용량을 부풀리고, 플랫폼별 컴파일 바이너리가 커밋될 위험이 있다.
+### 1. [심각·미해결] git 히스토리에 실제 일기 내용 + 평문 비밀번호가 남아있고, 이미 GitHub에 push되어 있음
+`data/diary_data.csv`의 민감한 행(row)은 `6f03d9e` 커밋에서 **현재 HEAD 기준으로는** 삭제되어 지금 파일은 헤더만 남아있다. 좋은 방향이지만, 이것만으로는 문제가 끝나지 않는다:
 
-**조치:** `git rm -r --cached .venv`를 실행하고 커밋한다. 이후 `git
-status`로 정상적으로 무시되는지 확인한다.
+- `git remote -v` 확인 결과 `origin`이 `https://github.com/dldnwls07/python_picture_dir`이고, `git branch -vv`에서 로컬 `main`이 `origin/main`과 완전히 동일하다 — 즉 **`data/diary_data.csv`에 평문 비밀번호(`12345678910`)와 실제 일기 본문이 들어있던 이전 커밋들이 지금 이 순간 GitHub에 공개(혹은 최소한 원격 저장소에 존재)되어 있다.**
+- CSV 파일을 지운 것은 "새 커밋"일 뿐, 과거 커밋의 blob은 여전히 히스토리에 남아 `git show a6b4830:data/diary_data.csv`처럼 누구나 접근할 수 있다.
 
-## 보안 / 개인정보
+**조치:** 단순히 파일을 지우는 커밋으로는 부족하다. `git filter-repo` 또는 BFG Repo-Cleaner로 `data/diary_data.csv`(및 `data/images/`) 전체를 히스토리에서 제거하고 강제 push해야 하며, 이미 유출된 비밀번호(`12345678910`)는 어딘가에서 재사용 중이라면 즉시 변경을 권장한다. 이 저장소가 private가 아니라면 특히 시급하다.
 
-### 3. 비밀번호 보호는 실질적 암호화가 아니라 겉모습(cosmetic)에 가까움
-`Diary.verify_password`는 *GUI 단*에서만 접근을 막을 뿐, `content`, `title`
-등 모든 메타데이터는 CSV에 평문으로 저장된다 (`csv_diary_repository.py`).
-`data/diary_data.csv` 파일을 직접 열어보면 "숨김" 처리된 일기라도 전체 내용을
-그대로 읽을 수 있다 — 해싱되는 것은 비밀번호 값 자체뿐이다. 로컬 단일 사용자용
-앱이라는 점을 감안하면 받아들일 수 있는 트레이드오프일 수도 있지만, "🔒 비밀
-일기" 체크박스가 실제 제공하는 것보다 더 강한 보호를 암시하지 않도록 UI
-문구에서라도 이를 명확히 하는 편이 좋다.
+### 2. [심각·부분 해결] `.venv/`가 여전히 `origin/main`에 커밋되어 있음
+`git ls-tree -r origin/main --name-only | grep '^\.venv/'`로 확인한 결과 여전히 7,751개 파일(pack 크기 73.81 MiB)이 원격에 남아있다. 로컬에서는 `git rm -r --cached .venv`가 **실행되어 스테이징까지는 되어 있지만 아직 커밋되지 않은 상태**다 (`git status`에 "Changes to be committed"로 표시됨). 이 스테이징을 커밋하고 push해야 실제로 반영된다. (단, 이 방법으로는 과거 커밋에 남아있는 `.venv` blob은 지워지지 않는다 — 저장소 용량 문제까지 해결하려면 위 1번과 함께 히스토리 재작성이 필요하다.)
 
-### 4. 하위 호환을 위한 평문 비밀번호 비교
-`domain/model/diary.py:53-55`는 저장된 값이 64자리 hex 문자열이 아닐 경우
-`self.password == input_password.strip()`로 평문 비교하는 폴백 로직을 갖고
-있다. 이는 (최근 해싱 커밋에 따른) 의도된 마이그레이션 임시 조치이지만,
-해싱 도입 이전에 저장된 일기는 다시 저장하지 않는 한 영구히 평문으로
-남는다는 의미다. CSV 전체에 대해 한 번 마이그레이션을 돌리거나, 최소한 이
-동작이 의도적이고 임시적이라는 주석을 남겨두는 것이 좋다.
-
-## 죽은 코드(Dead code)
-
-### 5. `engine/emotion_engine.py`와 `data/emotion_dict.py`는 더 이상 사용되지 않음
-두 파일 모두 어디서도 import되지 않는다 (전체 저장소 `grep`으로 확인함) —
-유일한 참조는 파일 자기 자신 내부와, `app_tkinter.py:317`의 오래된 주석
-("PyQt5 스타일과 동일하게 emotion_engine의 get_score_label을 이용")뿐인데,
-이 주석은 더 이상 실제 코드 동작과 맞지 않는다. 엔진 파일과 (~90줄짜리)
-감정 단어 사전 모두 삭제해도 된다.
-
-### 6. `manager/file_manager.py`가 `CSVDiaryRepository`와 중복됨
-`FileManager`는 `infrastructure/persistence/csv_diary_repository.py`와
-거의 동일한 복사본이다 (동일한 `HEADERS`, 동일한 원자적 저장 로직, 동일한
-CSV 읽기/쓰기 로직). 더 이상 어느 GUI에서도 사용되지 않으며 — 테스트
-(`test_file_manager.py`, `test_refactoring.py`, `test_app_gui.py`)에서만
-쓰인다. 이렇게 두 개의 병렬 CSV 구현을 유지하면 스키마가 바뀔 때마다
-(예: 최근의 헤더 검증 수정) 양쪽 모두에 반영해야 하며, 그렇지 않으면 조용히
-서로 어긋나게 된다. `FileManager`를 삭제하고 테스트를
-`CSVDiaryRepository` 기준으로 이식하거나, "레거시와 신규 구현이 동일한
-결과를 낸다"는 것을 증명하는 것이 유일한 목적인 `test_refactoring.py`
-자체를 — 새 코드를 신뢰한다면 — 삭제하는 것을 고려한다.
-
-### 7. `app_gui.py:152-160`의 `AppGUI._file_manager` property/setter
-```python
-@property
-def _file_manager(self):
-    return self._diary_service._repository
-
-@_file_manager.setter
-def _file_manager(self, value):
-    from infrastructure.persistence.csv_diary_repository import CSVDiaryRepository
-    repo = CSVDiaryRepository(value.filepath)
-    self._diary_service = DiaryService(repository=repo)
+**조치:**
 ```
-이 코드는 오직 `test_app_gui.py`가
-`self.window._file_manager = FileManager(temp_path)`를 실행해서 임시
-파일을 가리키는 repository를 얻을 수 있도록 존재한다. `DiaryService`의
-private 필드인 `_repository`에 레거시 속성 이름을 통해 접근하는, 프로덕션
-코드에 몰래 끼워 넣은 테스트용 우회 통로다. 가장 간단한 해결책은
-`DiaryService`/`AppGUI`에 테스트가 사용할 수 있는 실제 `repository`
-생성자 파라미터를 두고, 이 property는 완전히 제거하는 것이다.
-
-## 이식성 / 정확성
-
-### 8. 테스트가 macOS 전용 임시 경로를 하드코딩함
-`tests/test_app_gui.py:20`, `test_file_manager.py:14`,
-`test_refactoring.py:19`, `test_runtime_and_weather.py:12` 모두
-`tempfile.mkdtemp(..., dir="/private/tmp")`를 호출한다. `/private/tmp`는
-Windows나 일반 Linux에는 존재하지 않으므로, macOS가 아닌 환경에서는 이
-테스트들이 즉시 실패한다 (확인 결과: 이 Windows 환경에서는 의존성 누락으로
-인한 module-not-found 오류보다도 먼저 디렉터리 없음 오류로 실패한다).
-`dir=` 인자를 제거하고 `tempfile`이 플랫폼 기본값을 사용하도록 둔다.
-
-### 9. `runtime_env.configure_runtime`이 macOS 폰트 경로를 무조건 설정함
-```python
-os.environ.setdefault("FONTCONFIG_PATH", "/System/Library/Fonts")
+git commit -m "chore: stop tracking .venv"
+git push
 ```
-이 코드는 (`main.py`에서 무조건 호출되므로) 모든 플랫폼에서 실행된다.
-`setdefault`이기 때문에 이미 명시적으로 설정된 값을 덮어쓰지는 않지만,
-Windows/Linux에서는 존재하지 않는 디렉터리로 `FONTCONFIG_PATH`를 시드하게
-된다. 이는 fontconfig 기반 렌더링을 혼란스럽게 할 수 있다 (다만 워드클라우드
-figure에 쓰이는 matplotlib은 자체 폰트 탐색 로직을 쓰므로 오늘 시점에는
-우연히 무해하다). 잠재적 함정이므로 `sys.platform == "darwin"` 체크로 감싸는
-것이 좋다.
+그 후 저장소 용량까지 줄이고 싶다면 filter-repo/BFG로 히스토리에서도 제거.
 
-### 10. 현재 이 환경에서는 테스트가 아예 실행되지 않음
-`python -m unittest discover -s tests`를 실행하면 대부분의 모듈에서
-`ModuleNotFoundError: No module named 'PyQt5'` / `'requests'` 오류가
-발생한다 — 저장소에 커밋된 `.venv`가 실제로 사용 중인 인터프리터가 아니고,
-루트 레벨에 활성화된 venv도 없기 때문이다. 2번 항목을 해결한 뒤에는,
-`python -m unittest discover -s tests`가 바로 동작하도록 개발 환경
-설정/활성화 방법을 (예: 짧은 `README.md`에) 문서화해두는 것이 좋다.
+### 3. [미해결] `runtime_env.configure_runtime`이 모든 플랫폼에서 macOS 폰트 경로를 설정
+`runtime_env.py:46`의 `os.environ.setdefault("FONTCONFIG_PATH", "/System/Library/Fonts")`는 여전히 플랫폼 체크 없이 무조건 실행된다. 지난 리뷰와 동일하게 `sys.platform == "darwin"` 조건으로 감싸는 것을 권장한다.
 
-## 사소한 것들 / 있으면 좋은 것들
+### 4. [미해결] `csv_diary_repository.py:109`의 죽은 분기
+```python
+scores = [EmotionScore(0).EMOTION_LABEL_TO_SCORE.get(l, 0) if hasattr(EmotionScore(0), 'EMOTION_LABEL_TO_SCORE') else EMOTION_LABEL_TO_SCORE.get(l, 0) for l in labels]
+```
+`EmotionScore`에는 `EMOTION_LABEL_TO_SCORE` 속성이 없으므로 `hasattr` 분기는 항상 거짓이다. `EMOTION_LABEL_TO_SCORE.get(l, 0)`로 단순화 가능. (지난 리뷰 이후 변경 없음.)
 
-- **`implementation_plan.md`**가 여전히 DDD 리팩터링 이전 아키텍처를
-  설명하고 있고, (다른 기여자의 로컬 macOS 경로인)
-  `/Users/woojin/Developer/dir_py/...`를 링크하고 있다. 최근 두 번의
-  리팩터링 커밋보다 이전 문서이며, 현재 파일 구조에 대해 적극적으로
-  잘못된 정보를 주고 있다 — 업데이트하거나 삭제하는 것이 좋다.
-- **`smoke_check.py`**는 테스트 스위트와 Qt-오프스크린 체크를 셸로 실행하는
-  스크립트인데, 이 저장소 안에서는 CI에 연결되어 있지 않은 것으로 보인다.
-  로컬 사전 점검용 스크립트로 의도된 것이라면 README에 한 줄 정도
-  언급해두면 좋다.
-- `screenshot.png`도 `.gitignore`에 `*.png`와 `screenshot.png` 둘 다
-  등록되어 있음에도 git에 추적되고 있다 — 1번/2번 항목과 동일한
-  "무시 규칙 추가 전에 이미 추적되던" 패턴이다. 여기서는 무해하지만, 이런
-  패턴이 한두 곳이 아니라는 뜻이므로 하나씩 고치기보다
-  (`git ls-files` vs `.gitignore` 비교로) 저장소 전체를 한 번 훑어보는
-  것이 좋다.
-- `csv_diary_repository.py:109`에 죽은/헷갈리는 표현이 있다:
-  `EmotionScore(0).EMOTION_LABEL_TO_SCORE.get(l, 0) if hasattr(EmotionScore(0), 'EMOTION_LABEL_TO_SCORE') else EMOTION_LABEL_TO_SCORE.get(l, 0)`
-  — `EmotionScore`는 애초에 `EMOTION_LABEL_TO_SCORE` 속성을 가진 적이
-  없으므로 `hasattr` 분기는 항상 거짓이 되어 매번 `else`로 빠진다.
-  그냥 `EMOTION_LABEL_TO_SCORE.get(l, 0)`으로 단순화하면 된다.
+### 5. [미해결] `implementation_plan.md`가 여전히 낡은 상태
+DDD 리팩터링 이전 구조를 설명하고 다른 개발자의 로컬 macOS 경로(`/Users/woojin/Developer/dir_py/...`)를 링크하고 있다. 갱신하거나 삭제 필요.
 
-## 잘 되어 있는 부분
+### 6. [미해결] `screenshot.png`가 `.gitignore`에도 불구하고 여전히 추적됨
+`git ls-files`에 여전히 남아있음 — `.venv` 정리 시 함께 `git rm --cached` 하면 좋다.
 
-- `domain` / `application` / `infrastructure` 분리는 이전의 평면적인 파일
-  구조에 비해 실질적인 개선이며, 두 GUI(`app_gui.py`, `app_tkinter.py`)가
-  이제 동일한 `DiaryService`를 사용하므로 날씨/감정/점수 계산 로직이 두
-  프론트엔드 사이에서 더 이상 중복되지 않는다.
-- `CSVDiaryRepository._save_all_atomic`은 `.tmp` 파일에 먼저 쓴 뒤
-  `os.replace`로 교체하는 방식을 쓰는데, 쓰는 도중 크래시가 나도 CSV가
-  잘리지 않도록 하는 올바른 원자적 쓰기 패턴이다.
-- `DiaryService.save_diary`는 CSV 저장이 *성공한 뒤*에만 기존 이미지
-  파일을 삭제하도록 미루고, CSV 저장이 실패하면 새로 저장한 이미지를
-  롤백(삭제)한다 — 이미지/CSV 2단계 저장의 실패 상황을 합리적으로
-  처리하고 있다.
-- `d027530` 커밋의 CSV 검증 수정(row 업데이트를 정의된 스키마 헤더로만
-  제한)은 CSV 구조가 조용히 깨지는 것을 막는 좋은 방어적 수정이다.
+### 7. [정보/설계 트레이드오프, 재확인] 비밀번호 보호는 여전히 UI 단 전용
+`Diary.verify_password`가 접근을 막을 뿐, CSV에는 제목/본문이 평문으로 저장된다는 점은 이전과 동일하다. 개인용 로컬 앱이라는 성격을 감안하면 당장 고칠 필요는 없지만, 위 1번 사고를 계기로 "숨김 일기 = 파일 자체 암호화"가 아니라는 점을 사용자에게 명확히 알리는 문구를 추가하는 것을 고려해볼 만하다.
+
+## 새로 확인한 사항 (이번 변경분)
+
+### 8. [경미] AI 요청 도중 다이얼로그를 닫으면 `QThread` 참조가 위험해질 수 있음
+`app_gui.py`의 `show_ai_empathy_window`는 `self._ai_worker`에 실행 중인 `QThread`를 저장한다. 콜백(`_on_finished`/`_on_error`)에서 `dialog.isVisible()`을 체크해 다이얼로그가 닫힌 뒤의 위젯 접근은 잘 막고 있지만, 사용자가 같은 창에서 "AI 공감"을 다시 빠르게 여러 번 열면(예: 이전 다이얼로그를 닫자마자) `self._ai_worker`가 아직 실행 중인 이전 `QThread`를 덮어쓰게 되어 "QThread: Destroyed while thread is still running" 경고/크래시로 이어질 가능성이 있다. 다이얼로그가 모달(`exec_()`)이라 일반적인 사용 흐름에서는 발생하기 어렵지만, 이전 워커가 끝나기 전에 새 워커를 만들지 않도록 가드(`if self._ai_worker and self._ai_worker.isRunning(): return`)를 추가하면 더 안전하다.
+
+## 잘 되어 있는 부분 (변경분 포함)
+
+- `QThread` 기반 `AIWorker`로의 전환은 이전의 `threading.Thread` + `QTimer.singleShot` 조합보다 PyQt 관용구에 맞고, 시그널/슬롯이 스레드 경계를 명확히 해준다.
+- `ai_helper.py`가 Gemini 응답이 ` ```json ... ``` ` 코드펜스로 감싸져 오는 경우를 스트리핑하는 방어 로직을 추가한 것은 실제로 겪을 법한 API 응답 변형에 대한 합리적인 보강이다.
+- 레거시/신규 구현이 "동일한 결과를 내는지"를 검증하던 `test_refactoring.py`를 삭제하고, `CSVDiaryRepository` 자체를 검증하는 `test_csv_diary_repository.py`로 교체한 것은 신뢰할 수 있는 방향의 정리다.
+- 테스트가 더 이상 macOS 전용 경로에 의존하지 않아 Windows/Linux에서도 (의존성만 설치되어 있다면) 동작할 수 있게 되었다.
+
+## 우선순위 정리
+
+1. **지금 바로:** `.venv` 삭제를 커밋 + push (스테이징만 되어 있고 아직 반영 안 됨).
+2. **가능한 빨리:** 저장소가 공개 상태라면 `data/diary_data.csv` 히스토리 재작성(filter-repo/BFG) + 강제 push, 그리고 유출된 비밀번호(`12345678910`)를 다른 곳에서 재사용 중이라면 교체.
+3. **여유 있을 때:** `runtime_env.py`의 플랫폼 체크, `csv_diary_repository.py`의 죽은 분기, `implementation_plan.md`/`screenshot.png` 정리.

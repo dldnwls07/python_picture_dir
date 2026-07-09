@@ -106,7 +106,7 @@ class CSVDiaryRepository(DiaryRepository):
             emotion_label = row.get("emotion_label", "")
             labels = [l.strip() for l in emotion_label.split(",") if l.strip()]
             if labels:
-                scores = [EmotionScore(0).EMOTION_LABEL_TO_SCORE.get(l, 0) if hasattr(EmotionScore(0), 'EMOTION_LABEL_TO_SCORE') else EMOTION_LABEL_TO_SCORE.get(l, 0) for l in labels]
+                scores = [EMOTION_LABEL_TO_SCORE.get(l, 0) for l in labels]
                 score_val = sum(scores) / len(scores)
             else:
                 score_val = 0.0

@@ -82,7 +82,7 @@ def style_flat_button(btn, bg, fg="white", font_size=10):
 class AppGUI(tk.Tk):
     """Tkinter 기반의 감정 일기장 메인 윈도우."""
 
-    def __init__(self, start_weather_thread: bool = False):
+    def __init__(self):
         super().__init__()
 
         self.title("내 감정은 오늘도 F등급 ☀️⛅🌧️")

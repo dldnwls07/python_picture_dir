@@ -21,7 +21,7 @@ configure_runtime(PROJECT_ROOT)
 def run_tk() -> None:
     from app_tkinter import AppGUI
 
-    app = AppGUI(start_weather_thread=False)
+    app = AppGUI()
     app.mainloop()
 
 
@@ -30,7 +30,7 @@ def run_qt() -> None:
     from app_gui import AppGUI
 
     qt_app = QApplication(sys.argv)
-    window = AppGUI(start_weather_thread=False)
+    window = AppGUI()
     window.show()
     qt_app.exec_()
 

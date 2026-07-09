@@ -150,7 +150,7 @@ class AIWorker(QThread):
 class AppGUI(QMainWindow):
     """감정 일기장 메인 윈도우 클래스."""
 
-    def __init__(self, start_weather_thread: bool = False):
+    def __init__(self):
         super().__init__()
 
         # .ui 파일 로드
@@ -648,9 +648,6 @@ class AppGUI(QMainWindow):
 
     def show_ai_empathy_window(self):
         """AI의 일기 요약 및 따뜻한 공감 멘트를 표시하는 창을 연다."""
-        import threading
-        from PyQt5.QtCore import QTimer
-
         content = self.contentEdit.toPlainText().strip()
         if not content:
             self.display_alert("공감할 일기 내용이 없습니다. 내용을 먼저 입력해주세요!")

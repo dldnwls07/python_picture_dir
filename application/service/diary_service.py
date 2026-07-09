@@ -8,7 +8,6 @@ from domain.model.value_objects import (
 )
 from domain.repository.diary_repository import DiaryRepository
 from infrastructure.persistence.csv_diary_repository import CSVDiaryRepository
-from infrastructure.external.weather_service import WeatherService
 from infrastructure.external.ai_service import AIService
 from engine.text_processor import TextProcessor
 from engine.keyword_analyzer import KeywordAnalyzer
@@ -20,11 +19,9 @@ class DiaryService:
     def __init__(
         self,
         repository: Optional[DiaryRepository] = None,
-        weather_service: Optional[WeatherService] = None,
         ai_service: Optional[AIService] = None,
     ):
         self._repository = repository or CSVDiaryRepository()
-        self._weather_service = weather_service or WeatherService()
         self._ai_service = ai_service or AIService()
         self._text_processor = TextProcessor()
         self._keyword_analyzer = KeywordAnalyzer()
@@ -45,10 +42,6 @@ class DiaryService:
     def delete_diary(self, diary_id: int) -> bool:
         """ID로 특정 일기를 삭제합니다."""
         return self._repository.delete_by_id(diary_id)
-
-    def get_current_weather(self) -> Weather:
-        """현재 기상 및 위치 정보를 조회합니다."""
-        return self._weather_service.get_current_weather()
 
     def save_diary(
         self,

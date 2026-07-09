@@ -50,7 +50,7 @@ def check_qt_offscreen() -> int:
         "from PyQt5.QtWidgets import QApplication; "
         "from app_gui import AppGUI; "
         "app = QApplication([]); "
-        "win = AppGUI(start_weather_thread=False); "
+        "win = AppGUI(); "
         "print('qt-offscreen-ok', win.contentEdit.toPlainText())"
     )
     result = subprocess.run(

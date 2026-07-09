@@ -19,7 +19,7 @@ class AppGuiTest(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp(prefix="app_gui_test_")
-        self.window = AppGUI(start_weather_thread=False)
+        self.window = AppGUI()
         self.repo = CSVDiaryRepository(os.path.join(self.temp_dir, "diary.csv"))
         self.window._diary_service = DiaryService(repository=self.repo)
 
