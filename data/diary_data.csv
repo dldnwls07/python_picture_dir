@@ -1,2 +1,1 @@
 id,date,title,content,score,emotion_label,weather,actual_weather,actual_weather_text,weather_source,location_name,image_path,created_at,is_hidden,password
-1,2026-07-08,ㅊㅇㅊㅊㅇㅇㅇㅇㅇ,ㅇㅇㅇㅇㅇ,3.0,"재미있었어요,재미있었어요","🌤️,🌤️","☀️,☀️","맑음,맑음",manual,,/Users/woojin/Developer/dir_py/data/images/diary_20260708223402_67d92f.png,2026-07-08 22:34:02,True,12345678910
