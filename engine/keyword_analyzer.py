@@ -15,6 +15,8 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 class KeywordAnalyzer:
     """일기 텍스트에서 키워드 빈도를 분석하고 워드클라우드를 생성하는 클래스."""
 
+    MAX_KEYWORDS = 50  # 키워드 표와 워드클라우드가 같은 개수까지 보여주도록 공유하는 상한
+
     def __init__(self):
         # macOS / Windows 한글 폰트 자동 탐색
         self._font_path = self._find_korean_font()
@@ -38,7 +40,7 @@ class KeywordAnalyzer:
                 return path
         return ""  # 폰트를 못 찾으면 빈 문자열 (WordCloud 기본 폰트 사용)
 
-    def get_top_keywords(self, word_list: list, top_n: int = 10) -> list:
+    def get_top_keywords(self, word_list: list, top_n: int = MAX_KEYWORDS) -> list:
         """단어 빈도를 계산하여 상위 N개 키워드를 반환한다.
 
         Args:
@@ -76,7 +78,7 @@ class KeywordAnalyzer:
             "height": height,
             "background_color": "#1e1e2e",
             "colormap": "Pastel1",
-            "max_words": 50,
+            "max_words": self.MAX_KEYWORDS,
             "prefer_horizontal": 0.7,
             "relative_scaling": 0.5,
         }

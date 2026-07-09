@@ -10,13 +10,13 @@ from PyQt5.QtWidgets import (
     QLabel, QComboBox, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QTableWidgetItem, QHeaderView, QScrollArea,
     QCheckBox, QInputDialog, QGraphicsOpacityEffect, QDateEdit,
-    QCalendarWidget, QStackedWidget, QFrame,
+    QCalendarWidget, QStackedWidget, QFrame, QTableView, QSplitter,
 )
 from PyQt5.QtCore import (
     QDate, Qt, QThread, pyqtSignal, QEvent, QVariantAnimation, QPropertyAnimation,
-    QParallelAnimationGroup, QEasingCurve, QAbstractAnimation, QRect,
+    QParallelAnimationGroup, QEasingCurve, QAbstractAnimation, QRect, QPointF,
 )
-from PyQt5.QtGui import QPixmap, QColor, QPainter, QPen, QImage, QPainterPath
+from PyQt5.QtGui import QPixmap, QColor, QPainter, QPen, QImage, QPainterPath, QPolygonF
 from PyQt5 import uic
 
 # 프로젝트 루트를 sys.path에 추가
@@ -134,20 +134,87 @@ class DrawingCanvas(QWidget):
         return self._dirty
 
 
+class _WeeklyTrendOverlay(QWidget):
+    """QCalendarWidget 내부 날짜 그리드(QTableView) 위에 겹쳐서, 한 주(행) 단위로 감정 점수
+    추이를 잇는 미니 선을 그리는 투명 오버레이(8-2). 공식 API는 아니고 QCalendarWidget의 내부
+    구조(QTableView)에 의존하는 우회법이라, table_view를 못 찾으면 이 위젯 자체를 만들지 않는다."""
+
+    def __init__(self, calendar_widget: "EmotionCalendarWidget", table_view: QTableView):
+        super().__init__(table_view.viewport())
+        self._calendar = calendar_widget
+        self._table_view = table_view
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        # 흰색 선은 히트맵의 밝은 피치/코랄 계열 셀 위에서 명도 대비가 약해 묻히므로, 히트맵
+        # 팔레트에 없는 민트(포인트 컬러)로 바꾸고 두께를 키워 어떤 배경 위에서도 눈에 띄게 한다.
+        pen = QPen(QColor("#94e2d5"))
+        pen.setWidth(3)
+        painter.setPen(pen)
+
+        for week in self._calendar._current_month_weeks():
+            points = []
+            for date in week:
+                date_str = date.toString("yyyy-MM-dd")
+                score = self._calendar._scores_by_date.get(date_str)
+                rect = self._calendar._last_cell_rects.get(date_str)
+                if score is None or rect is None:
+                    points.append(None)
+                    continue
+                ratio = (max(-5.0, min(5.0, score)) + 5.0) / 10.0  # 0(-5점) ~ 1(+5점), 축 고정
+                x = rect.center().x()
+                y = rect.bottom() - ratio * rect.height()
+                points.append(QPointF(x, y))
+
+            # 데이터가 있는 구간만 이어 그리고, 일기가 없는 요일에서는 선을 끊는다.
+            segment = []
+            for p in points:
+                if p is None:
+                    if len(segment) >= 2:
+                        painter.drawPolyline(QPolygonF(segment))
+                    segment = []
+                else:
+                    segment.append(p)
+            if len(segment) >= 2:
+                painter.drawPolyline(QPolygonF(segment))
+        painter.end()
+
+
 class EmotionCalendarWidget(QCalendarWidget):
-    """날짜별 평균 감정 점수를 배경색 히트맵으로 보여주는 캘린더."""
+    """날짜별 평균 감정 점수를 배경색 히트맵 + 주간 미니 선그래프로 보여주는 캘린더(8-1/8-2/8-3)."""
+
+    # 8-3: 다크 테마 히트맵 색상 스케일
+    _COLOR_NO_DATA = QColor("#1e1e2e")
+    _COLOR_NEUTRAL = QColor("#45475a")
+    _COLOR_POSITIVE_MILD = QColor("#fab387")
+    _COLOR_POSITIVE_EXTREME = QColor("#f38ba8")
+    _COLOR_NEGATIVE_MILD = QColor("#b4befe")
+    _COLOR_NEGATIVE_EXTREME = QColor("#89b4fa")
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._scores_by_date = {}
+        self._last_cell_rects = {}
         self.setGridVisible(True)
         self.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
+        # 네이티브 요일(월~일) 헤더는 QSS/팔레트 어느 쪽으로도 다크 테마 색을 입힐 수 없는 내부
+        # 위젯이라(라이트 모드 배경 고정, 7-9-4) 아예 끄고, 호출부(_init_right_stack)에서 직접
+        # 그린 헤더 라벨 줄로 대체한다.
+        self.setHorizontalHeaderFormat(QCalendarWidget.NoHorizontalHeader)
+        # 기본값(일요일 시작)로 두면 _current_month_weeks()(월요일 시작 가정, 8-2 미니 선그래프가
+        # 사용)와 실제 그리드의 주 경계가 어긋나서 미니 선이 서로 다른 시각적 행을 가로질러
+        # 이어지는 톱니 버그가 생긴다 — Tk 쪽(EmotionCalendarFrame)도 월요일 시작이라 통일한다.
+        self.setFirstDayOfWeek(Qt.Monday)
+        # 무데이터 셀이 메인 배경색에 자연스럽게 묻히도록 캘린더 뷰 배경도 맞춘다(8-3).
         # 7-9-4: 선택 날짜의 각진 점선 포커스 테두리 제거 + 그리드 셀 내부 여백 확보
         self.setStyleSheet("""
             QCalendarWidget QAbstractItemView:enabled {
                 outline: 0;
-                selection-background-color: #89b4fa;
-                selection-color: #1e1e2e;
+                background-color: #1e1e2e;
+                selection-background-color: transparent;
                 padding: 4px;
             }
             QCalendarWidget QToolButton {
@@ -161,30 +228,98 @@ class EmotionCalendarWidget(QCalendarWidget):
             }
         """)
 
+        self._line_overlay = None
+        table_view = self.findChild(QTableView)
+        if table_view is not None:
+            self._line_overlay = _WeeklyTrendOverlay(self, table_view)
+            self._line_overlay.setGeometry(table_view.viewport().rect())
+            self._line_overlay.raise_()
+            table_view.viewport().installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if (
+            self._line_overlay is not None
+            and obj is self._line_overlay.parent()
+            and event.type() == QEvent.Resize
+        ):
+            self._line_overlay.setGeometry(obj.rect())
+            self._line_overlay.update()
+        return super().eventFilter(obj, event)
+
     def set_emotion_scores(self, scores_by_date: dict):
-        """{"yyyy-MM-dd": 평균 점수} 형태의 딕셔너리로 히트맵 데이터를 갱신한다."""
+        """{"yyyy-MM-dd": 평균 점수} 형태의 딕셔너리로 히트맵/미니 선그래프 데이터를 갱신한다."""
         self._scores_by_date = scores_by_date
         self.updateCells()
+        if self._line_overlay is not None:
+            self._line_overlay.update()
+
+    def _current_month_weeks(self):
+        """현재 표시 중인 달을 QCalendarWidget과 동일한 규칙(월요일 시작)으로 주 단위 그리드화한다."""
+        import calendar as calendar_module
+        cal = calendar_module.Calendar(firstweekday=0)
+        weeks = []
+        for week in cal.monthdatescalendar(self.yearShown(), self.monthShown()):
+            weeks.append([QDate(d.year, d.month, d.day) for d in week])
+        return weeks
+
+    # 셀 안쪽 여백 — 셀 사이로 메인 배경색이 자연스러운 그리드 선처럼 드러나도록 함
+    CELL_PADDING = 4
 
     def paintCell(self, painter: QPainter, rect, date: QDate):
-        super().paintCell(painter, rect, date)
-        score = self._scores_by_date.get(date.toString("yyyy-MM-dd"))
+        date_str = date.toString("yyyy-MM-dd")
+        pad = self.CELL_PADDING
+        padded_rect = rect.adjusted(pad, pad, -pad, -pad)
+        # 미니 선(오버레이)도 이 패딩된 영역 안에서만 그려지도록, 꽉 찬 rect가 아니라
+        # padded_rect를 저장한다 — 그래야 선이 셀 배경 바깥(그리드 여백)으로 삐져나가지 않는다.
+        self._last_cell_rects[date_str] = QRect(padded_rect)
+        score = self._scores_by_date.get(date_str)
+
         if score is None:
+            super().paintCell(painter, rect, date)
             return
+
         painter.save()
-        painter.setOpacity(0.55)
-        painter.fillRect(rect, self._color_for_score(score))
+        bg_color = self._color_for_score(score)
+        painter.fillRect(padded_rect, bg_color)
+
+        text_color = QColor("#1e1e2e") if bg_color.lightnessF() > 0.6 else QColor("#f5f5f5")
+        painter.setPen(text_color)
+        bold_font = painter.font()
+        bold_font.setBold(True)
+        painter.setFont(bold_font)
+        painter.drawText(padded_rect, Qt.AlignCenter, str(date.day()))
+
+        if date == QDate.currentDate():
+            today_pen = QPen(QColor("#f5f5f5"))
+            today_pen.setWidth(1)
+            painter.setPen(today_pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(padded_rect.adjusted(0, 0, -1, -1))
+
+        if date == self.selectedDate():
+            sel_pen = QPen(QColor("#f5f5f5"))
+            sel_pen.setWidth(2)
+            painter.setPen(sel_pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(padded_rect.adjusted(1, 1, -1, -1), 4, 4)
+
         painter.restore()
 
+    @classmethod
+    def _color_for_score(cls, score: float) -> QColor:
+        """점수(-5~5)를 8-3에서 정한 다크 테마 팔레트로 매핑한다."""
+        score = max(-5.0, min(5.0, score))
+        if score == 0:
+            return QColor(cls._COLOR_NEUTRAL)
+        if score > 0:
+            return cls._blend(cls._COLOR_POSITIVE_MILD, cls._COLOR_POSITIVE_EXTREME, score / 5.0)
+        return cls._blend(cls._COLOR_NEGATIVE_MILD, cls._COLOR_NEGATIVE_EXTREME, (-score) / 5.0)
+
     @staticmethod
-    def _color_for_score(score: float) -> QColor:
-        """점수(-5~5)를 차가운 색(부정)에서 따뜻한 색(긍정)으로 보간한다."""
-        ratio = (max(-5.0, min(5.0, score)) + 5.0) / 10.0
-        cold = QColor(69, 71, 90)     # 어두운 슬레이트 (부정)
-        warm = QColor(250, 179, 135)  # 따뜻한 주황 (긍정)
-        r = int(cold.red() + (warm.red() - cold.red()) * ratio)
-        g = int(cold.green() + (warm.green() - cold.green()) * ratio)
-        b = int(cold.blue() + (warm.blue() - cold.blue()) * ratio)
+    def _blend(c1: QColor, c2: QColor, t: float) -> QColor:
+        r = int(c1.red() + (c2.red() - c1.red()) * t)
+        g = int(c1.green() + (c2.green() - c1.green()) * t)
+        b = int(c1.blue() + (c2.blue() - c1.blue()) * t)
         return QColor(r, g, b)
 
 
@@ -249,7 +384,6 @@ class AppGUI(QMainWindow):
         self._current_diary_id = None
         self._existing_image_path = ""
         self._remove_existing_image = False
-        self._hovered_diary_item = None
         self._secret_mode = False
         self._secret_color_anim = None
         self._tear_animation_group = None
@@ -298,10 +432,32 @@ class AppGUI(QMainWindow):
         calendar_layout = QVBoxLayout(self.calendarPage)
         calendar_layout.setContentsMargins(24, 20, 24, 16)
         calendar_layout.setSpacing(12)
+
+        # QCalendarWidget의 네이티브 요일(월~일) 헤더는 QSS/팔레트로 다크 테마 색을 입힐 수 없는
+        # 내부 위젯이라(라이트 모드 배경이 고정으로 남음, 7-9-4), 헤더 자체를 끄고 직접 그린
+        # 라벨 줄로 대체한다.
+        weekday_row = QHBoxLayout()
+        weekday_row.setSpacing(0)
+        for name in ["월", "화", "수", "목", "금", "토", "일"]:
+            weekday_label = QLabel(name)
+            weekday_label.setAlignment(Qt.AlignCenter)
+            weekday_label.setStyleSheet(
+                "background-color: #313244; color: #cdd6f4; font-weight: bold; padding: 6px 0;"
+            )
+            weekday_row.addWidget(weekday_label, 1)
+        calendar_layout.addLayout(weekday_row)
+
         self.emotionCalendar = EmotionCalendarWidget()
         calendar_layout.addWidget(self.emotionCalendar)
+
+        calendar_button_row = QHBoxLayout()
         self.newButton.setMinimumHeight(40)
-        calendar_layout.addWidget(self.newButton)
+        calendar_button_row.addWidget(self.newButton)
+        self.emotionGraphButton = QPushButton("📈 감정 그래프")
+        self.emotionGraphButton.setObjectName("emotionGraphButton")
+        self.emotionGraphButton.setMinimumHeight(40)
+        calendar_button_row.addWidget(self.emotionGraphButton)
+        calendar_layout.addLayout(calendar_button_row)
 
         self.rightStack = QStackedWidget()
         self.rightStack.addWidget(self.calendarPage)  # index 0: 캘린더(MAIN)
@@ -313,8 +469,40 @@ class AppGUI(QMainWindow):
 
         self.rightStack.setCurrentIndex(0)
 
+    def _init_left_right_splitter(self):
+        """좌측 내비게이션 패널의 폭을 사용자가 드래그로 조절할 수 있도록 mainLayout을 QSplitter로 재구성한다.
+
+        .ui에서는 leftPanel/rightPanel이 고정 QHBoxLayout(mainLayout)의 아이템이라 폭 조절이 불가능했다.
+        두 패널을 layout에서 떼어내 QSplitter에 다시 얹는 방식으로, leftPanel/rightPanel 자체와 그
+        내부 레이아웃(leftLayout 등)은 건드리지 않고 부모만 바꾼다.
+        """
+        self.mainLayout.removeWidget(self.leftPanel)
+        self.mainLayout.removeWidget(self.rightPanel)
+
+        self.mainSplitter = QSplitter(Qt.Horizontal)
+        self.mainSplitter.setChildrenCollapsible(False)
+        self.mainSplitter.setHandleWidth(6)
+        self.mainSplitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #313244;
+            }
+            QSplitter::handle:hover {
+                background-color: #89b4fa;
+            }
+        """)
+        self.mainSplitter.addWidget(self.leftPanel)
+        self.mainSplitter.addWidget(self.rightPanel)
+        self.mainSplitter.setStretchFactor(0, 0)
+        self.mainSplitter.setStretchFactor(1, 1)
+        self.mainSplitter.setSizes([280, 720])
+
+        self.mainLayout.addWidget(self.mainSplitter)
+
     def _init_ui(self):
         """메인 화면 초기 설정."""
+        # 좌측 내비게이션 패널을 드래그로 폭 조절 가능하게 만든다.
+        self._init_left_right_splitter()
+
         # rightPanel 내부를 "캘린더(MAIN)"/"일기 편집" 두 페이지를 오가는 스택으로 재구성한다(7-2/7-3).
         # 기존 rightLayout(및 그 안의 모든 위젯)은 그대로 editorPage로 옮기고, rightPanel 자체는
         # 새 QVBoxLayout 하나로 QStackedWidget만 담도록 바꾼다.
@@ -476,14 +664,17 @@ class AppGUI(QMainWindow):
         self.exitSecretModeButton.setVisible(False)
         self.leftLayout.addWidget(self.exitSecretModeButton)
 
-        # QComboBox 스타일을 다크 모드에 맞게 전역 추가 (QTabWidget 스타일 제거)
+        # QComboBox 스타일을 다크 모드에 맞게 전역 추가 (QTabWidget 스타일 제거).
+        # main.py의 QT_GLOBAL_STYLESHEET(QApplication 레벨)도 같은 규칙을 갖고 있지만, 여기서도
+        # 직접 지정해두어야 main.py를 거치지 않고 AppGUI를 생성하는 경우(예: 테스트)에도 메인
+        # 창의 드롭다운이 OS 기본값으로 안 보이는 문제 없이 항상 일관되게 보인다.
         extra_style = """
         QComboBox {
             background-color: #313244;
             border: 1px solid #45475a;
             border-radius: 6px;
             padding: 6px 10px;
-            color: #cdd6f4;
+            color: #f5f5f5;
             font-size: 13px;
         }
         QComboBox::drop-down {
@@ -494,7 +685,9 @@ class AppGUI(QMainWindow):
         }
         QComboBox QAbstractItemView {
             background-color: #313244;
-            color: #cdd6f4;
+            color: #f5f5f5;
+            border: 1px solid #45475a;
+            outline: 0;
             selection-background-color: #89b4fa;
             selection-color: #1e1e2e;
         }
@@ -503,7 +696,7 @@ class AppGUI(QMainWindow):
             border: 1px solid #45475a;
             border-radius: 8px;
             padding: 12px;
-            color: #cdd6f4;
+            color: #f5f5f5;
             font-size: 14px;
             line-height: 1.6;
         }
@@ -519,6 +712,7 @@ class AppGUI(QMainWindow):
         self.deleteButton.clicked.connect(self._on_delete_clicked)
         self.mindmapButton.clicked.connect(self.show_mindmap_window)
         self.newButton.clicked.connect(self._on_new_diary_requested)
+        self.emotionGraphButton.clicked.connect(self.show_emotion_graph_window)
         self.backToCalendarButton.clicked.connect(self._show_calendar_page)
         self.secretDiaryButton.clicked.connect(self._on_open_secret_diary_clicked)
         self.exitSecretModeButton.clicked.connect(self._exit_secret_mode)
@@ -540,34 +734,12 @@ class AppGUI(QMainWindow):
         self.filterStartDateEdit.dateChanged.connect(self._load_diary_list)
         self.filterEndDateEdit.dateChanged.connect(self._load_diary_list)
 
-        # 목록 항목에 마우스를 올리면 잘린 요약 대신 전문이 보이도록 확장
+        # 목록 항목의 요약은 미리보기로 잘라서 표시하고, 전문은 툴팁으로 보여준다(마우스를 올려도
+        # 항목 높이가 늘어나지 않으므로 그 때문에 스크롤바가 나타났다 사라졌다 하지 않는다).
         self.diaryListWidget.setWordWrap(True)
-        self.diaryListWidget.setMouseTracking(True)
-        self.diaryListWidget.itemEntered.connect(self._on_diary_item_hovered)
-        self.diaryListWidget.viewport().installEventFilter(self)
-
-    def eventFilter(self, obj, event):
-        if obj is self.diaryListWidget.viewport() and event.type() == QEvent.Leave:
-            self._reset_hovered_diary_item()
-        return super().eventFilter(obj, event)
-
-    def _on_diary_item_hovered(self, item: QListWidgetItem):
-        """목록 항목에 마우스가 올라가면 잘린 요약 대신 전문을 보여주고, item 높이를 늘린다."""
-        if item is self._hovered_diary_item:
-            return
-        self._reset_hovered_diary_item()
-        full_text = item.data(Qt.UserRole + 1)
-        if full_text:
-            item.setText(full_text)
-            self._hovered_diary_item = item
-
-    def _reset_hovered_diary_item(self):
-        """마우스가 목록을 벗어나거나 다른 항목으로 옮겨가면 이전 항목을 원래 미리보기로 되돌린다."""
-        if self._hovered_diary_item is not None:
-            preview_text = self._hovered_diary_item.data(Qt.UserRole + 2)
-            if preview_text is not None:
-                self._hovered_diary_item.setText(preview_text)
-            self._hovered_diary_item = None
+        # 세로 스크롤바를 아예 표시하지 않는다 — 스크롤 자체는 마우스 휠로 계속 가능하다.
+        self.diaryListWidget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.diaryListWidget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
     # ── 비밀 일기장 모드 ────────────────────────────────────────
 
@@ -904,6 +1076,11 @@ class AppGUI(QMainWindow):
         """일기 목록에서 항목 선택 시 내용을 표시한다."""
         if self._suppress_next_diary_selection:
             self._suppress_next_diary_selection = False
+            # QListWidget이 자동으로 잡아버린 "현재 항목"(row 0)을 시각적으로도 완전히 지운다.
+            # 그냥 return만 하면 폼 로딩/페이지 전환은 막히지만, 목록에는 여전히 맨 위 항목이
+            # 포커스/선택된 것처럼 보여서 "자동으로 펼쳐진 것 같다"는 착시가 남는다.
+            self.diaryListWidget.clearSelection()
+            self.diaryListWidget.setCurrentRow(-1)
             return
         if current is None:
             return
@@ -1097,7 +1274,6 @@ class AppGUI(QMainWindow):
 
         평소에는 비밀 일기를 제외한 목록을, 비밀 일기장 모드에서는 반대로 숨겨진 일기만 보여준다.
         """
-        self._reset_hovered_diary_item()
         self.diaryListWidget.clear()
         self._refresh_calendar_scores()
 
@@ -1131,9 +1307,10 @@ class AppGUI(QMainWindow):
 
             item = QListWidgetItem(preview_text)
             item.setData(Qt.UserRole, diary_id)
-            # 마우스를 올렸을 때(hover) 보여줄 전문과, 원래대로 되돌릴 미리보기를 저장해둔다
-            item.setData(Qt.UserRole + 1, full_text)
-            item.setData(Qt.UserRole + 2, preview_text)
+            # 전문을 항상 툴팁으로 보여준다(요약이 안 잘렸거나 아예 없는 항목도 마우스를 올리면
+            # 반응이 있어야 함). 항목 높이 자체는 그대로 유지되어 스크롤바가 마우스오버 때문에
+            # 나타났다 사라졌다 하지 않는다.
+            item.setToolTip(full_text)
             self.diaryListWidget.addItem(item)
 
         has_active_filter = bool(
@@ -1206,8 +1383,8 @@ class AppGUI(QMainWindow):
                 background-color: #1e1e2e;
             }
             QLabel {
-                color: #cdd6f4;
-                font-family: "Apple SD Gothic Neo", "Helvetica Neue", sans-serif;
+                color: #f5f5f5;
+                font-family: "Pretendard", "Noto Sans KR", "Malgun Gothic", sans-serif;
             }
             QScrollArea {
                 border: none;
@@ -1218,7 +1395,7 @@ class AppGUI(QMainWindow):
                 border: 1px solid #45475a;
                 border-radius: 6px;
                 padding: 10px;
-                color: #cdd6f4;
+                color: #f5f5f5;
                 font-size: 13px;
             }
             QLineEdit:focus {
@@ -1394,6 +1571,52 @@ class AppGUI(QMainWindow):
         self._save_worker.error.connect(_on_error)
         self._save_worker.start()
 
+        dialog.exec_()
+
+    def show_emotion_graph_window(self):
+        """캘린더 페이지의 '감정 그래프' 버튼: 기간을 선택해 감정 점수 추이 매크로 뷰를 보여준다(8-5)."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("📈 감정 그래프")
+        dialog.resize(760, 480)
+
+        layout = QVBoxLayout(dialog)
+
+        period_row = QHBoxLayout()
+        period_row.addWidget(QLabel("시작 날짜"))
+        start_edit = QDateEdit()
+        start_edit.setCalendarPopup(True)
+        start_edit.setDisplayFormat("yyyy-MM-dd")
+        start_edit.setDate(QDate.currentDate().addMonths(-1))
+        period_row.addWidget(start_edit)
+        period_row.addWidget(QLabel("종료 날짜"))
+        end_edit = QDateEdit()
+        end_edit.setCalendarPopup(True)
+        end_edit.setDisplayFormat("yyyy-MM-dd")
+        end_edit.setDate(QDate.currentDate())
+        period_row.addWidget(end_edit)
+        draw_button = QPushButton("그래프 그리기")
+        period_row.addWidget(draw_button)
+        layout.addLayout(period_row)
+
+        image_label = QLabel("기간을 선택하고 '그래프 그리기'를 눌러주세요.")
+        image_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(image_label, 1)
+
+        def _draw():
+            start = start_edit.date().toString("yyyy-MM-dd")
+            end = end_edit.date().toString("yyyy-MM-dd")
+            png_bytes = self._diary_service.generate_trend_chart(start, end, dark_theme=True)
+            if not png_bytes:
+                image_label.setText("해당 기간에 표시할 데이터가 없습니다.")
+                image_label.setPixmap(QPixmap())
+                return
+            pixmap = QPixmap()
+            pixmap.loadFromData(png_bytes)
+            image_label.setText("")
+            image_label.setPixmap(pixmap)
+
+        draw_button.clicked.connect(_draw)
+        _draw()
         dialog.exec_()
 
     def show_mindmap_window(self):

@@ -6,9 +6,10 @@ from unittest.mock import patch, MagicMock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QApplication, QMessageBox, QDialog
+from PyQt5.QtGui import QColor
 
-from app_gui import AppGUI
+from app_gui import AppGUI, EmotionCalendarWidget
 from domain.model.diary import Diary
 from domain.model.value_objects import EmotionScore, Weather
 from infrastructure.persistence.csv_diary_repository import CSVDiaryRepository
@@ -131,6 +132,20 @@ class AppGuiTest(unittest.TestCase):
         self.assertEqual(self.window.rightStack.currentIndex(), 0)
         self.assertIs(self.window.rightStack.currentWidget(), self.window.calendarPage)
 
+    def test_no_phantom_list_selection_on_startup(self):
+        """QListWidget이 화면에 처음 표시될 때 0번 항목을 자동으로 선택해버리는 Qt 습성 때문에,
+        아무것도 클릭하지 않았는데도 목록 맨 위 항목이 선택된 것처럼 보이는 문제가 있었다.
+        창을 보여주고 이벤트 루프를 돌려도 currentRow가 -1(선택 없음)을 유지해야 한다."""
+        self._save_diary("2026-01-01")
+        self._save_diary("2026-01-02")
+        self.window._load_diary_list()
+        self.window.show()
+        for _ in range(5):
+            QApplication.processEvents()
+        self.assertEqual(self.window.diaryListWidget.currentRow(), -1)
+        self.assertEqual(self.window.diaryListWidget.selectedItems(), [])
+        self.assertEqual(self.window.rightStack.currentIndex(), 0)
+
     def test_new_diary_button_switches_to_editor_page(self):
         self.window.newButton.click()
         self.assertEqual(self.window.rightStack.currentIndex(), 1)
@@ -173,6 +188,46 @@ class AppGuiTest(unittest.TestCase):
         with patch("PyQt5.QtWidgets.QMessageBox.question", return_value=QMessageBox.Yes):
             self.window._on_delete_clicked()
         self.assertEqual(self.window.rightStack.currentIndex(), 0)
+
+    def test_calendar_color_palette_boundaries(self):
+        self.assertEqual(EmotionCalendarWidget._color_for_score(0).name(), "#45475a")
+        self.assertEqual(EmotionCalendarWidget._color_for_score(5).name(), "#f38ba8")
+        self.assertEqual(EmotionCalendarWidget._color_for_score(-5).name(), "#89b4fa")
+        # score가 0을 살짝 넘으면 완화(mild) 긍정/부정 끝점 색상에 가까워야 한다
+        near_zero_positive = EmotionCalendarWidget._color_for_score(0.01)
+        near_zero_negative = EmotionCalendarWidget._color_for_score(-0.01)
+        mild_positive = QColor("#fab387")
+        mild_negative = QColor("#b4befe")
+        self.assertLess(abs(near_zero_positive.red() - mild_positive.red()), 3)
+        self.assertLess(abs(near_zero_negative.red() - mild_negative.red()), 3)
+
+    def test_calendar_overlay_and_cell_rects_populated(self):
+        self.window.show()
+        for _ in range(3):
+            QApplication.processEvents()
+        self.assertIsNotNone(self.window.emotionCalendar._line_overlay)
+        self.assertGreater(len(self.window.emotionCalendar._last_cell_rects), 0)
+
+    @patch("PyQt5.QtWidgets.QDialog.exec_")
+    def test_emotion_graph_button_opens_dialog_without_crash(self, mock_dialog_exec):
+        mock_dialog_exec.return_value = 1
+        self._save_diary("2026-06-01")
+        self.window.emotionGraphButton.click()
+
+    def test_list_item_preview_does_not_expand_on_hover(self):
+        """마우스오버로 항목 텍스트가 길어지면 목록 스크롤바가 나타났다 사라졌다 하는 문제가
+        있었다(전문은 텍스트 대신 툴팁으로만 보여줘야 한다)."""
+        long_summary = "요약 내용 " * 20
+        diary = self._save_diary("2026-06-01")
+        diary.summary = long_summary
+        self.repo.save(diary)
+
+        self.window._load_diary_list()
+        item = self.window.diaryListWidget.item(0)
+        self.assertNotIn(long_summary.strip(), item.text())
+        self.assertIn(long_summary.strip(), item.toolTip())
+        self.assertFalse(hasattr(self.window, "_hovered_diary_item"))
+        self.assertFalse(hasattr(self.window, "_on_diary_item_hovered"))
 
 
 if __name__ == "__main__":

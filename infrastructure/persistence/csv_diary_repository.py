@@ -77,10 +77,11 @@ class CSVDiaryRepository(DiaryRepository):
         temp_filepath = self._filepath + ".tmp"
         try:
             os.makedirs(os.path.dirname(self._filepath), exist_ok=True)
+            sorted_rows = sorted(data_list, key=lambda row: row.get("date", ""))
             with open(temp_filepath, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=self.HEADERS)
                 writer.writeheader()
-                writer.writerows(data_list)
+                writer.writerows(sorted_rows)
             
             if os.path.exists(temp_filepath):
                 os.replace(temp_filepath, self._filepath)

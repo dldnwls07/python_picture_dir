@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from app_tkinter import AppGUI
+from app_tkinter import AppGUI, EmotionCalendarFrame
 from domain.model.diary import Diary
 from domain.model.value_objects import EmotionScore, Weather
 from infrastructure.persistence.csv_diary_repository import CSVDiaryRepository
@@ -97,6 +97,50 @@ class AppTkinterTest(unittest.TestCase):
             messagebox.askyesno = original_askyesno
         self.window.update()
         self.assertTrue(self.window.calendar_page.winfo_ismapped())
+
+    def test_calendar_color_palette_boundaries(self):
+        self.assertEqual(EmotionCalendarFrame._color_for_score(None), EmotionCalendarFrame._COLOR_NO_DATA)
+        self.assertEqual(EmotionCalendarFrame._color_for_score(0), EmotionCalendarFrame._COLOR_NEUTRAL)
+        self.assertEqual(
+            EmotionCalendarFrame._color_for_score(5),
+            EmotionCalendarFrame._blend(
+                EmotionCalendarFrame._COLOR_POSITIVE_MILD, EmotionCalendarFrame._COLOR_POSITIVE_EXTREME, 1.0
+            ),
+        )
+        self.assertEqual(
+            EmotionCalendarFrame._color_for_score(-5),
+            EmotionCalendarFrame._blend(
+                EmotionCalendarFrame._COLOR_NEGATIVE_MILD, EmotionCalendarFrame._COLOR_NEGATIVE_EXTREME, 1.0
+            ),
+        )
+
+    def test_calendar_canvas_click_dispatches_correct_date(self):
+        self._save_diary("2026-04-01")
+        self.window.emotion_calendar.set_emotion_scores(
+            self.window._diary_service.get_emotion_scores_by_date()
+        )
+        self.window.update()
+        cal = self.window.emotion_calendar
+        self.assertGreater(len(cal._cell_bounds), 0)
+        clicked = []
+        cal._on_date_click = lambda d: clicked.append(d)
+        x0, y0, x1, y1, date_str = cal._cell_bounds[0]
+
+        class FakeEvent:
+            x = (x0 + x1) / 2
+            y = (y0 + y1) / 2
+
+        cal._on_canvas_click(FakeEvent())
+        self.assertEqual(clicked, [date_str])
+
+    def test_emotion_graph_button_opens_dialog_without_crash(self):
+        self._save_diary("2026-06-01")
+        self.window.btn_emotion_graph.invoke()
+        self.window.update()
+        # 열린 Toplevel(그래프 다이얼로그)을 정리한다
+        for child in self.window.winfo_children():
+            if isinstance(child, __import__("tkinter").Toplevel):
+                child.destroy()
 
 
 if __name__ == "__main__":

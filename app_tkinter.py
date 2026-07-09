@@ -83,7 +83,22 @@ def style_flat_button(btn, bg, fg="white", font_size=10):
 
 
 class EmotionCalendarFrame(ttk.Frame):
-    """날짜별 평균 감정 점수를 배경색 히트맵으로 보여주는 캘린더(7-11: tkcalendar 없이 직접 그리드로 구현)."""
+    """날짜별 평균 감정 점수를 배경색 히트맵 + 주간 미니 선그래프로 보여주는 캘린더.
+
+    7-11: tkcalendar 없이 직접 그리드로 구현. 8-4: 셀마다 별도 위젯을 grid()로 배치하지 않고
+    단일 tk.Canvas 안에 격자 전체를 렌더링(grid/pack 혼용 TclError 이력 회피). 8-2: 같은 Canvas
+    위에 한 주(행) 단위로 감정 점수를 잇는 미니 선을 함께 그린다.
+    """
+
+    CELL_PADDING = 3
+
+    # 라이트 테마용 히트맵 색상(Qt의 8-3 다크 팔레트와 같은 4단계 구조를 라이트 테마에 맞게 적용)
+    _COLOR_NO_DATA = COLOR_CARD
+    _COLOR_NEUTRAL = COLOR_BORDER
+    _COLOR_POSITIVE_MILD = (255, 224, 178)
+    _COLOR_POSITIVE_EXTREME = (255, 159, 67)
+    _COLOR_NEGATIVE_MILD = (214, 222, 235)
+    _COLOR_NEGATIVE_EXTREME = (173, 189, 216)
 
     def __init__(self, parent, on_date_click=None, **kwargs):
         super().__init__(parent, style="TFrame", **kwargs)
@@ -92,6 +107,7 @@ class EmotionCalendarFrame(ttk.Frame):
         today = datetime.now()
         self._current_year = today.year
         self._current_month = today.month
+        self._cell_bounds = []  # [(x0, y0, x1, y1, date_str), ...] 클릭 히트테스트용
 
         header = ttk.Frame(self, style="TFrame")
         header.pack(fill="x", pady=(0, 8))
@@ -113,15 +129,13 @@ class EmotionCalendarFrame(ttk.Frame):
             ttk.Label(weekday_row, text=name, style="TLabel", anchor="center").grid(row=0, column=i, sticky="nsew")
             weekday_row.columnconfigure(i, weight=1)
 
-        self._grid_frame = ttk.Frame(self, style="TFrame")
-        self._grid_frame.pack(fill="both", expand=True)
-        for i in range(7):
-            self._grid_frame.columnconfigure(i, weight=1)
-
-        self._render_calendar()
+        self._canvas = tk.Canvas(self, bg=COLOR_CARD, highlightthickness=0)
+        self._canvas.pack(fill="both", expand=True)
+        self._canvas.bind("<Configure>", lambda e: self._render_calendar())
+        self._canvas.bind("<Button-1>", self._on_canvas_click)
 
     def set_emotion_scores(self, scores_by_date: dict):
-        """{"yyyy-MM-dd": 평균 점수} 형태의 딕셔너리로 히트맵 데이터를 갱신한다."""
+        """{"yyyy-MM-dd": 평균 점수} 형태의 딕셔너리로 히트맵/미니 선그래프 데이터를 갱신한다."""
         self._scores_by_date = scores_by_date
         self._render_calendar()
 
@@ -140,45 +154,105 @@ class EmotionCalendarFrame(ttk.Frame):
         self._render_calendar()
 
     def _render_calendar(self):
-        for widget in self._grid_frame.winfo_children():
-            widget.destroy()
-
-        import calendar as calendar_module
+        self._canvas.delete("all")
+        self._cell_bounds = []
         self._month_label.config(text=f"{self._current_year}년 {self._current_month}월")
 
+        width = self._canvas.winfo_width()
+        height = self._canvas.winfo_height()
+        if width <= 1 or height <= 1:
+            # 최초 pack() 직후에는 아직 실제 크기가 배정되지 않음 — 다음 <Configure>에서 다시 그림
+            return
+
+        import calendar as calendar_module
         cal = calendar_module.Calendar(firstweekday=0)  # 월요일 시작
         weeks = cal.monthdayscalendar(self._current_year, self._current_month)
-        for row_idx, week in enumerate(weeks):
-            self._grid_frame.rowconfigure(row_idx, weight=1)
-            for col_idx, day in enumerate(week):
-                if day == 0:
-                    cell = tk.Label(self._grid_frame, text="", bg=COLOR_BG)
-                else:
-                    date_str = f"{self._current_year:04d}-{self._current_month:02d}-{day:02d}"
-                    score = self._scores_by_date.get(date_str)
-                    bg = self._color_for_score(score) if score is not None else COLOR_CARD
-                    cell = tk.Label(
-                        self._grid_frame, text=str(day), bg=bg, fg=COLOR_TEXT_MAIN,
-                        font=("Malgun Gothic", 10), relief="flat", bd=1, cursor="hand2",
-                        width=4, height=2,
-                    )
-                    cell.bind("<Button-1>", lambda e, d=date_str: self._handle_click(d))
-                cell.grid(row=row_idx, column=col_idx, sticky="nsew", padx=1, pady=1)
 
-    def _handle_click(self, date_str):
-        if self._on_date_click:
-            self._on_date_click(date_str)
+        rows = len(weeks)
+        cols = 7
+        cell_w = width / cols
+        cell_h = height / rows
+        pad = self.CELL_PADDING
+
+        for row_idx, week in enumerate(weeks):
+            y0 = row_idx * cell_h
+            y1 = y0 + cell_h
+            week_points = []  # (x, score) — 8-2 미니 선그래프용
+
+            for col_idx, day in enumerate(week):
+                x0 = col_idx * cell_w
+                x1 = x0 + cell_w
+
+                if day == 0:
+                    week_points.append(None)
+                    continue
+
+                date_str = f"{self._current_year:04d}-{self._current_month:02d}-{day:02d}"
+                score = self._scores_by_date.get(date_str)
+                fill = self._color_for_score(score)
+
+                self._canvas.create_rectangle(
+                    x0 + pad, y0 + pad, x1 - pad, y1 - pad,
+                    fill=fill, outline=COLOR_BORDER, width=1,
+                )
+                self._canvas.create_text(
+                    x0 + pad + 6, y0 + pad + 4, anchor="nw",
+                    text=str(day), fill=self._text_color_for(fill),
+                    font=("Malgun Gothic", 10),
+                )
+                self._cell_bounds.append((x0, y0, x1, y1, date_str))
+                week_points.append((x0 + cell_w / 2, score))
+
+            self._draw_week_trend_line(week_points, y0, y1)
+
+    def _draw_week_trend_line(self, week_points, y0: float, y1: float):
+        """한 주(행) 안에서만 이어지는 미니 선을 그린다 — 축 고정(-5~5), 데이터 공백은 끊는다(8-2)."""
+        segment = []
+        for entry in week_points:
+            if entry is None or entry[1] is None:
+                if len(segment) >= 2:
+                    self._canvas.create_line(*[c for p in segment for c in p], fill="#495057", width=2)
+                segment = []
+                continue
+            x, score = entry
+            ratio = (max(-5.0, min(5.0, score)) + 5.0) / 10.0
+            y = y1 - ratio * (y1 - y0)
+            segment.append((x, y))
+        if len(segment) >= 2:
+            self._canvas.create_line(*[c for p in segment for c in p], fill="#495057", width=2)
+
+    def _on_canvas_click(self, event):
+        for (x0, y0, x1, y1, date_str) in self._cell_bounds:
+            if x0 <= event.x <= x1 and y0 <= event.y <= y1:
+                if self._on_date_click:
+                    self._on_date_click(date_str)
+                return
+
+    @classmethod
+    def _color_for_score(cls, score) -> str:
+        """점수(-5~5)를 라이트 테마 히트맵 팔레트로 매핑한다(무데이터/중립/긍정/부정 4단계, 8-3 구조 준용)."""
+        if score is None:
+            return cls._COLOR_NO_DATA
+        score = max(-5.0, min(5.0, score))
+        if score == 0:
+            return cls._COLOR_NEUTRAL
+        if score > 0:
+            return cls._blend(cls._COLOR_POSITIVE_MILD, cls._COLOR_POSITIVE_EXTREME, score / 5.0)
+        return cls._blend(cls._COLOR_NEGATIVE_MILD, cls._COLOR_NEGATIVE_EXTREME, (-score) / 5.0)
 
     @staticmethod
-    def _color_for_score(score: float) -> str:
-        """점수(-5~5)를 차가운 색(부정)에서 따뜻한 색(긍정)으로 보간한다."""
-        ratio = (max(-5.0, min(5.0, score)) + 5.0) / 10.0
-        cold = (173, 189, 216)   # 차분한 블루그레이 (부정)
-        warm = (255, 183, 94)    # 따뜻한 주황 (긍정)
-        r = int(cold[0] + (warm[0] - cold[0]) * ratio)
-        g = int(cold[1] + (warm[1] - cold[1]) * ratio)
-        b = int(cold[2] + (warm[2] - cold[2]) * ratio)
+    def _blend(c1, c2, t: float) -> str:
+        r = int(c1[0] + (c2[0] - c1[0]) * t)
+        g = int(c1[1] + (c2[1] - c1[1]) * t)
+        b = int(c1[2] + (c2[2] - c1[2]) * t)
         return f"#{r:02x}{g:02x}{b:02x}"
+
+    @staticmethod
+    def _text_color_for(hex_color: str) -> str:
+        hex_color = hex_color.lstrip("#")
+        r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+        luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        return COLOR_TEXT_MAIN if luminance > 150 else "#FFFFFF"
 
 
 class AppGUI(tk.Tk):
@@ -227,17 +301,43 @@ class AppGUI(tk.Tk):
         style.configure("TLabel", background=COLOR_BG, foreground=COLOR_TEXT_MAIN, font=("Malgun Gothic", 10))
         style.configure("Card.TLabel", background=COLOR_CARD, foreground=COLOR_TEXT_MAIN)
         style.configure("Header.TLabel", font=("Malgun Gothic", 12, "bold"))
-        
-        # 2. 메인 화면 Grid 분할 (Left Panel: 300px, Right Panel: 660px)
-        self.grid_columnconfigure(0, weight=3, minsize=300)
-        self.grid_columnconfigure(1, weight=7, minsize=600)
+
+        # ttk.Combobox는 지금까지 별도 스타일이 없어 OS/Tcl-Tk 기본값을 그대로 썼다. 특히 드롭다운
+        # 목록(팝다운)은 ttk 테마가 아니라 순수 Tk Listbox라서 시스템이 다크 모드일 때 배경색이
+        # 앱의 밝은 테마와 어긋나 글자가 잘 안 보일 수 있다 — 필드/팝다운 색을 명시적으로 지정한다.
+        style.configure(
+            "TCombobox",
+            fieldbackground=COLOR_CARD,
+            background=COLOR_CARD,
+            foreground=COLOR_TEXT_MAIN,
+            arrowcolor=COLOR_TEXT_MAIN,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", COLOR_CARD), ("disabled", COLOR_BORDER)],
+            foreground=[("disabled", COLOR_TEXT_SUB)],
+        )
+        self.option_add("*TCombobox*Listbox.background", COLOR_CARD)
+        self.option_add("*TCombobox*Listbox.foreground", COLOR_TEXT_MAIN)
+        self.option_add("*TCombobox*Listbox.selectBackground", COLOR_PRIMARY)
+        self.option_add("*TCombobox*Listbox.selectForeground", "#FFFFFF")
+        self.option_add("*TCombobox*Listbox.font", ("Malgun Gothic", 10))
+
+        # 2. 메인 화면 좌우 분할 — PanedWindow로 구성해 좌측 패널 폭을 드래그로 조절할 수 있게 함
+        self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
+
+        self.mainPaned = tk.PanedWindow(
+            self, orient=tk.HORIZONTAL, sashwidth=6, sashrelief="flat",
+            bg=COLOR_BORDER, bd=0, opaqueresize=True,
+        )
+        self.mainPaned.grid(row=0, column=0, sticky="nsew")
 
         # ────────────────────────────────────────────────────────
         # LEFT PANEL: 일기 목록
         # ────────────────────────────────────────────────────────
-        left_panel = ttk.Frame(self, style="TFrame", padding=15)
-        left_panel.grid(row=0, column=0, sticky="nsew")
+        left_panel = ttk.Frame(self.mainPaned, style="TFrame", padding=15)
+        self.mainPaned.add(left_panel, minsize=260, width=300)
 
         lbl_list = ttk.Label(left_panel, text="일기 히스토리", style="Header.TLabel")
         lbl_list.pack(anchor="w", pady=(0, 5))
@@ -285,21 +385,18 @@ class AppGUI(tk.Tk):
             relief="flat",
             bd=0,
             highlightthickness=0,
-            font=("Malgun Gothic", 10),
+            font=("Malgun Gothic", 12),
             activestyle="none",
             exportselection=False
         )
-        self.diary_listbox.pack(side="left", fill="both", expand=True)
-
-        scrollbar = ttk.Scrollbar(list_card, orient="vertical", command=self.diary_listbox.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.diary_listbox.config(yscrollcommand=scrollbar.set)
+        # 스크롤바 위젯 없이 꽉 채운다 — 마우스 휠 스크롤은 별도 위젯 없이도 그대로 동작한다.
+        self.diary_listbox.pack(fill="both", expand=True)
 
         # ────────────────────────────────────────────────────────
         # RIGHT PANEL: 일기 에디터 및 감정 정보
         # ────────────────────────────────────────────────────────
-        right_panel = ttk.Frame(self, style="TFrame", padding=15)
-        right_panel.grid(row=0, column=1, sticky="nsew")
+        right_panel = ttk.Frame(self.mainPaned, style="TFrame", padding=15)
+        self.mainPaned.add(right_panel, minsize=400)
 
         # rightPanel 내부를 캘린더(MAIN)/일기 편집 두 페이지로 나누고, pack()/pack_forget()으로
         # 서로 전환한다(7-2/7-3, Qt의 QStackedWidget과 동일한 역할).
@@ -473,6 +570,10 @@ class AppGUI(tk.Tk):
         self.btn_new.pack(fill="x")
         style_flat_button(self.btn_new, COLOR_SECONDARY)
 
+        self.btn_emotion_graph = tk.Button(self.calendar_page, text="📈 감정 그래프")
+        self.btn_emotion_graph.pack(fill="x", pady=(6, 0))
+        style_flat_button(self.btn_emotion_graph, COLOR_AI, font_size=9)
+
         self.btn_save = tk.Button(btn_frame, text="일기 저장")
         self.btn_save.pack(side="left", padx=(0, 10))
         style_flat_button(self.btn_save, COLOR_PRIMARY)
@@ -523,11 +624,12 @@ class AppGUI(tk.Tk):
             padx=10,
             pady=4
         )
-        self.statusbar.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self.statusbar.grid(row=1, column=0, sticky="ew")
 
     def _connect_events(self):
         """이벤트 연결."""
         self.btn_new.configure(command=self._on_new_diary_requested)
+        self.btn_emotion_graph.configure(command=self.show_emotion_graph_window)
         self.btn_save.configure(command=self.on_save_clicked)
         self.btn_delete.configure(command=self._on_delete_clicked)
         self.btn_mindmap.configure(command=self.show_mindmap_window)
@@ -1474,6 +1576,105 @@ class AppGUI(tk.Tk):
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
 
+
+    # ── 감정 그래프(매크로 뷰) ──────────────────────
+
+    def show_emotion_graph_window(self):
+        """캘린더 페이지의 '감정 그래프' 버튼: 기간을 선택해 감정 점수 추이 매크로 뷰를 보여준다(8-5)."""
+        dialog = tk.Toplevel(self)
+        dialog.title("📈 감정 그래프")
+        dialog.geometry("780x520")
+        dialog.configure(bg=COLOR_BG)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        control_frame = ttk.Frame(dialog, style="TFrame", padding=15)
+        control_frame.pack(fill="x")
+
+        today = datetime.now()
+        ttk.Label(control_frame, text="시작 날짜:", font=("Malgun Gothic", 10, "bold")).pack(side="left", padx=5)
+        start_var = tk.StringVar(value=(today - timedelta(days=30)).strftime("%Y-%m-%d"))
+        ttk.Entry(control_frame, textvariable=start_var, width=12, font=("Malgun Gothic", 10)).pack(side="left", padx=5)
+
+        ttk.Label(control_frame, text="종료 날짜:", font=("Malgun Gothic", 10, "bold")).pack(side="left", padx=5)
+        end_var = tk.StringVar(value=today.strftime("%Y-%m-%d"))
+        ttk.Entry(control_frame, textvariable=end_var, width=12, font=("Malgun Gothic", 10)).pack(side="left", padx=5)
+
+        btn_draw = tk.Button(control_frame, text="그래프 그리기")
+        btn_draw.pack(side="left", padx=15)
+        style_flat_button(btn_draw, COLOR_PRIMARY)
+
+        chart_frame = ttk.Frame(dialog, style="TFrame", padding=15)
+        chart_frame.pack(fill="both", expand=True)
+
+        info_label = tk.Label(dialog, text="기간을 입력한 뒤 그래프 그리기 버튼을 클릭해 주세요.", bg=COLOR_CARD, fg=COLOR_TEXT_SUB, font=("Malgun Gothic", 9), anchor="w", padx=10, pady=5)
+        info_label.pack(side="bottom", fill="x")
+
+        def draw_graph():
+            start_str = start_var.get().strip()
+            end_str = end_var.get().strip()
+            try:
+                start_date = datetime.strptime(start_str, "%Y-%m-%d")
+                end_date = datetime.strptime(end_str, "%Y-%m-%d")
+            except ValueError:
+                messagebox.showerror("오류", "날짜 형식이 잘못되었습니다. (YYYY-MM-DD)")
+                return
+            if end_date < start_date:
+                start_date, end_date = end_date, start_date
+
+            scores_by_date = self._diary_service.get_emotion_scores_by_date(
+                date_from=start_date.strftime("%Y-%m-%d"), date_to=end_date.strftime("%Y-%m-%d")
+            )
+
+            for widget in chart_frame.winfo_children():
+                widget.destroy()
+
+            if not scores_by_date:
+                info_label.config(text="해당 기간에 작성된 일기가 없습니다.")
+                tk.Label(chart_frame, text="해당 기간 데이터 없음", font=("Malgun Gothic", 12), bg=COLOR_BG, fg=COLOR_TEXT_SUB).pack(expand=True)
+                return
+
+            # 기간 내 매일을 순회하며 일기 없는 날은 None으로 남겨 선이 자연스럽게 끊기게 한다(8-2/8-5).
+            dates = []
+            scores = []
+            current = start_date
+            while current <= end_date:
+                date_str = current.strftime("%Y-%m-%d")
+                dates.append(current)
+                scores.append(scores_by_date.get(date_str))
+                current += timedelta(days=1)
+
+            import matplotlib.pyplot as plt
+            plt.rcParams['font.family'] = 'Malgun Gothic'
+            plt.rcParams['axes.unicode_minus'] = False
+
+            fig = Figure(figsize=(6.5, 4), dpi=100)
+            fig.patch.set_facecolor(COLOR_BG)
+            ax = fig.add_subplot(111)
+            ax.set_facecolor(COLOR_CARD)
+
+            plot_scores = [s if s is not None else float("nan") for s in scores]
+            ax.plot(dates, plot_scores, marker='o', linestyle='-', color=COLOR_PRIMARY,
+                    linewidth=2, markersize=5, markerfacecolor=COLOR_DANGER, markeredgecolor=COLOR_DANGER)
+
+            ax.set_title("감정 점수 변화 추이", fontsize=13, fontweight='bold', color=COLOR_TEXT_MAIN, pad=12)
+            ax.set_ylabel("감정 점수", fontsize=10, color=COLOR_TEXT_SUB, labelpad=8)
+            ax.set_ylim(-5.5, 5.5)
+            ax.axhline(0, color=COLOR_BORDER, linewidth=1.5, linestyle='--')
+            ax.grid(True, linestyle='--', alpha=0.5, color=COLOR_BORDER)
+            ax.tick_params(colors=COLOR_TEXT_SUB, labelsize=8)
+            for spine in ax.spines.values():
+                spine.set_edgecolor(COLOR_BORDER)
+            fig.autofmt_xdate(rotation=30)
+
+            canvas = FigureCanvasTkAgg(fig, master=chart_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill="both", expand=True)
+
+            info_label.config(text=f"📊 {start_str} ~ {end_str} 기간 중 일기 작성일 {len(scores_by_date)}일 렌더링 완료")
+
+        btn_draw.config(command=draw_graph)
+        draw_graph()
 
     # ── 월간 감정 통계 창 ──────────────────────────
 

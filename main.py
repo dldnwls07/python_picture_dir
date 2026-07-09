@@ -25,6 +25,103 @@ def run_tk() -> None:
     app.mainloop()
 
 
+# QDialog(및 그 안의 QComboBox/QDateEdit 드롭다운 팝업)은 부모 위젯이 있어도 그 자체로 별도의
+# 최상위 창(isWindow() == True)이라, MainWindow나 각 .ui 파일에 지정한 스타일시트가 자동으로
+# 상속되지 않는다. 다이얼로그마다 개별적으로 스타일을 다시 지정하면 하나라도 빠뜨린 드롭다운은
+# 배경/글자색이 OS 기본값으로 표시되어 다크 테마와 충돌하며 잘 안 보이게 된다. 이를 앱 전체에서
+# 한 번에 해결하기 위해 QApplication 레벨(모든 최상위 창에 공통 적용됨)에 콤보박스/날짜 선택
+# 팝업 등에 대한 공통 스타일을 지정한다.
+QT_GLOBAL_STYLESHEET = """
+QDialog {
+    background-color: #1e1e2e;
+}
+QWidget {
+    color: #f5f5f5;
+}
+QComboBox {
+    background-color: #313244;
+    border: 1px solid #45475a;
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: #f5f5f5;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 20px;
+    border-left: 1px solid #45475a;
+}
+QComboBox QAbstractItemView {
+    background-color: #313244;
+    color: #f5f5f5;
+    border: 1px solid #45475a;
+    outline: 0;
+    selection-background-color: #89b4fa;
+    selection-color: #1e1e2e;
+}
+QDateEdit {
+    background-color: #313244;
+    border: 1px solid #45475a;
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: #f5f5f5;
+}
+QDateEdit::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: right center;
+    width: 20px;
+    border-left: 1px solid #45475a;
+}
+QCalendarWidget QWidget {
+    background-color: #1e1e2e;
+    color: #f5f5f5;
+}
+QCalendarWidget QAbstractItemView:enabled {
+    background-color: #1e1e2e;
+    color: #f5f5f5;
+    outline: 0;
+    selection-background-color: #89b4fa;
+    selection-color: #1e1e2e;
+}
+QCalendarWidget QToolButton {
+    color: #f5f5f5;
+    background-color: transparent;
+    border-radius: 6px;
+    padding: 4px 8px;
+}
+QCalendarWidget QToolButton:hover {
+    background-color: #313244;
+}
+QCalendarWidget QSpinBox {
+    background-color: #313244;
+    color: #f5f5f5;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+}
+QLineEdit, QTextEdit {
+    background-color: #313244;
+    border: 1px solid #45475a;
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: #f5f5f5;
+}
+QLineEdit:focus, QTextEdit:focus {
+    border: 1px solid #89b4fa;
+}
+QPushButton {
+    background-color: #89b4fa;
+    color: #1e1e2e;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 18px;
+    font-weight: bold;
+}
+QPushButton:hover {
+    background-color: #74c7ec;
+}
+"""
+
+
 def run_qt() -> None:
     from PyQt5.QtGui import QFont
     from PyQt5.QtWidgets import QApplication
@@ -35,6 +132,10 @@ def run_qt() -> None:
     default_font = QFont("Pretendard")
     default_font.setStyleStrategy(QFont.PreferAntialias)
     qt_app.setFont(default_font)
+    # 드롭다운/날짜 팝업 등이 다이얼로그마다 스타일을 놓쳐 안 보이는 문제를 원천 차단(QApplication
+    # 레벨은 모든 다이얼로그를 포함한 최상위 창에 공통 적용됨). 각 창의 개별 스타일시트가 더 우선
+    # 적용되므로 기존 색상 커스터마이징과 충돌하지 않는다.
+    qt_app.setStyleSheet(QT_GLOBAL_STYLESHEET)
     window = AppGUI()
     window.show()
     qt_app.exec_()

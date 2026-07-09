@@ -41,12 +41,12 @@
     QListWidget {
       background-color: #181825;
       border: none;
-      color: #cdd6f4;
-      font-size: 13px;
+      color: #f5f5f5;
+      font-size: 15px;
       outline: none;
     }
     QListWidget::item {
-      padding: 10px 12px;
+      padding: 14px 12px;
       border-bottom: 1px solid #313244;
     }
     QListWidget::item:selected {
@@ -61,7 +61,7 @@
       border: 1px solid #45475a;
       border-radius: 6px;
       padding: 6px 10px;
-      color: #cdd6f4;
+      color: #f5f5f5;
       font-size: 13px;
     }
     QDateEdit::drop-down {
@@ -75,7 +75,7 @@
       border: 1px solid #45475a;
       border-radius: 6px;
       padding: 6px 10px;
-      color: #cdd6f4;
+      color: #f5f5f5;
       font-size: 14px;
     }
     QLineEdit:focus {
@@ -86,7 +86,7 @@
       border: 1px solid #45475a;
       border-radius: 8px;
       padding: 12px;
-      color: #cdd6f4;
+      color: #f5f5f5;
       font-size: 14px;
       line-height: 1.6;
     }
@@ -107,7 +107,7 @@
     }
     QPushButton:pressed {
       background-color: #585b70;
-      color: #cdd6f4;
+      color: #f5f5f5;
     }
     /* 7-9-3: 메인(저장/새 일기 - 파랑, 위 QPushButton 기본값) / 서브(키워드 분석·비밀일기 관련 -
        톤다운된 회색조) / 경고(삭제 - 차분한 빨강) 3색 팔레트로 정리 */
@@ -119,13 +119,15 @@
     }
     QPushButton#mindmapButton,
     QPushButton#secretDiaryButton,
-    QPushButton#backToCalendarButton {
+    QPushButton#backToCalendarButton,
+    QPushButton#emotionGraphButton {
       background-color: #45475a;
       color: #f5f5f5;
     }
     QPushButton#mindmapButton:hover,
     QPushButton#secretDiaryButton:hover,
-    QPushButton#backToCalendarButton:hover {
+    QPushButton#backToCalendarButton:hover,
+    QPushButton#emotionGraphButton:hover {
       background-color: #585b70;
     }
     QLabel#weatherLabel {
@@ -173,7 +175,7 @@
       </property>
       <property name="maximumSize">
        <size>
-        <width>300</width>
+        <width>480</width>
         <height>16777215</height>
        </size>
       </property>

@@ -14,6 +14,7 @@ from infrastructure.persistence.location_preset_store import LocationPresetStore
 from infrastructure.external.ai_service import AIService
 from engine.text_processor import TextProcessor
 from engine.keyword_analyzer import KeywordAnalyzer
+from engine.trend_chart import TrendChartRenderer
 
 
 class DiaryService:
@@ -32,6 +33,7 @@ class DiaryService:
         self._location_store = location_store or LocationPresetStore()
         self._text_processor = TextProcessor()
         self._keyword_analyzer = KeywordAnalyzer()
+        self._trend_chart_renderer = TrendChartRenderer()
 
     def _apply_date_range(self, diaries: List[Diary], date_from: str, date_to: str) -> List[Diary]:
         if not date_from and not date_to:
@@ -65,13 +67,23 @@ class DiaryService:
         result = [d for d in diaries if d.is_hidden and d.matches_filter(f)]
         return self._apply_date_range(result, date_from, date_to)
 
-    def get_emotion_scores_by_date(self) -> Dict[str, float]:
-        """날짜별 평균 감정 점수를 반환합니다(캘린더 히트맵용, 비밀 일기 제외)."""
-        diaries = self.get_all_diaries()
+    def get_emotion_scores_by_date(self, date_from: str = "", date_to: str = "") -> Dict[str, float]:
+        """날짜별 평균 감정 점수를 반환합니다(캘린더 히트맵/감정 그래프용, 비밀 일기 제외).
+
+        date_from/date_to를 지정하면 그 기간(포함)으로 범위를 제한합니다(8-5 매크로 뷰).
+        """
+        diaries = self.get_all_diaries(date_from=date_from, date_to=date_to)
         scores_by_date: Dict[str, List[float]] = {}
         for d in diaries:
             scores_by_date.setdefault(d.date, []).append(d.emotion_score.value)
         return {date: sum(values) / len(values) for date, values in scores_by_date.items()}
+
+    def generate_trend_chart(self, date_from: str, date_to: str, dark_theme: bool = True) -> bytes:
+        """기간별 감정 점수 추이 매크로 뷰(꺾은선 그래프) PNG 바이트를 생성합니다(8-5)."""
+        scores = self.get_emotion_scores_by_date(date_from=date_from, date_to=date_to)
+        return self._trend_chart_renderer.generate_trend_chart_bytes(
+            scores, date_from, date_to, dark_theme=dark_theme
+        )
 
     def get_location_presets(self) -> List[str]:
         """위치 입력 콤보박스에 채울 프리셋 목록(기본값 + 사용자 추가분)을 반환합니다."""
@@ -274,7 +286,7 @@ class DiaryService:
         if not words:
             return [], b""
 
-        top_keywords = self._keyword_analyzer.get_top_keywords(words, top_n=10)
+        top_keywords = self._keyword_analyzer.get_top_keywords(words)
         wc_bytes = self._keyword_analyzer.generate_wordcloud_bytes(words, width=wordcloud_width, height=wordcloud_height)
         return top_keywords, wc_bytes
 
