@@ -68,15 +68,21 @@ class DiaryService:
         return self._apply_date_range(result, date_from, date_to)
 
     def get_emotion_scores_by_date(self, date_from: str = "", date_to: str = "") -> Dict[str, float]:
-        """날짜별 평균 감정 점수를 반환합니다(캘린더 히트맵/감정 그래프용, 비밀 일기 제외).
+        """날짜별 평균 감정 점수를 반환합니다(캘린더 히트맵/감정 그래프용).
 
+        비밀 일기도 점수 집계에 포함한다 — 캘린더 히트맵과 감정 그래프 선이 비밀 일기
+        날짜에서 끊기지 않아야 하기 때문. 내용은 여전히 비밀 일기장 모드에서만 볼 수 있다.
         date_from/date_to를 지정하면 그 기간(포함)으로 범위를 제한합니다(8-5 매크로 뷰).
         """
-        diaries = self.get_all_diaries(date_from=date_from, date_to=date_to)
+        diaries = self._apply_date_range(self._repository.find_all(), date_from, date_to)
         scores_by_date: Dict[str, List[float]] = {}
         for d in diaries:
             scores_by_date.setdefault(d.date, []).append(d.emotion_score.value)
         return {date: sum(values) / len(values) for date, values in scores_by_date.items()}
+
+    def get_secret_diary_dates(self) -> List[str]:
+        """비밀 일기가 있는 날짜 목록을 반환합니다(캘린더 🔒 특별 표시용)."""
+        return sorted({d.date for d in self._repository.find_all() if d.is_hidden})
 
     def generate_trend_chart(self, date_from: str, date_to: str, dark_theme: bool = True) -> bytes:
         """기간별 감정 점수 추이 매크로 뷰(꺾은선 그래프) PNG 바이트를 생성합니다(8-5)."""
@@ -96,13 +102,13 @@ class DiaryService:
     def find_diary_for_date(self, date: str) -> Optional[Diary]:
         """해당 날짜의 일기를 하나 반환합니다(비밀 일기 포함, 캘린더 날짜 클릭 용도).
 
-        같은 날짜에 여러 건이 있으면 가장 최근에 작성/수정된 것을 반환합니다.
+        하루에 일기 1개가 원칙이지만, 과거 데이터에 중복이 남아 있으면
+        가장 나중에 만들어진(id가 큰) 것을 반환합니다.
         """
         diaries = [d for d in self._repository.find_all() if d.date == date]
         if not diaries:
             return None
-        diaries.sort(key=lambda d: d.created_at, reverse=True)
-        return diaries[0]
+        return max(diaries, key=lambda d: d.id or 0)
 
     def get_diaries_by_date_range(self, start: str, end: str) -> List[Diary]:
         """특정 기간 동안의 일기를 조회합니다 (비밀 일기 제외)."""
@@ -173,6 +179,17 @@ class DiaryService:
                 actual_weather=actual_weather_emoji,
                 actual_weather_text=actual_weather_text
             )
+
+            # 하루당 일기 1개 원칙: 새 일기라도 같은 날짜에 일기가 이미 있으면
+            # 그 일기를 수정하는 것으로 병합한다.
+            if diary_id is None:
+                existing_same_date = self.find_diary_for_date(date)
+                if existing_same_date is not None:
+                    if existing_same_date.is_hidden:
+                        # 비밀 일기는 일반 저장 경로에서 모르는 채 덮어쓰지 않도록 병합 대신 실패 처리
+                        print(f"저장 거부: {date}에는 이미 비밀 일기가 있습니다.")
+                        return False, None
+                    diary_id = existing_same_date.id
 
             # 3. 이미지 처리 설계 변경 (즉시 삭제하지 않고 지연 처리)
             image_path = ""

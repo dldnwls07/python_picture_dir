@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import (
     QDate, Qt, QThread, pyqtSignal, QEvent, QVariantAnimation, QPropertyAnimation,
     QParallelAnimationGroup, QEasingCurve, QAbstractAnimation, QRect, QPoint, QPointF,
+    QTimer,
 )
 from PyQt5.QtGui import QPixmap, QColor, QPainter, QPen, QImage, QPainterPath, QPolygonF
 from PyQt5 import uic
@@ -193,10 +194,14 @@ class EmotionCalendarWidget(QCalendarWidget):
     _COLOR_POSITIVE_EXTREME = QColor("#f38ba8")
     _COLOR_NEGATIVE_MILD = QColor("#b4befe")
     _COLOR_NEGATIVE_EXTREME = QColor("#89b4fa")
+    # 비밀 일기 날짜 강조 — 히트맵 팔레트에 없는 보라(mauve) 계열이라 어떤 셀 위에서도 구분된다
+    _COLOR_SECRET_BORDER = QColor("#cba6f7")
+    _COLOR_SECRET_NO_DATA = QColor("#2a1a3a")
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._scores_by_date = {}
+        self._secret_dates = set()
         self._last_cell_rects = {}
         self.setGridVisible(True)
         self.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
@@ -246,9 +251,10 @@ class EmotionCalendarWidget(QCalendarWidget):
             self._line_overlay.update()
         return super().eventFilter(obj, event)
 
-    def set_emotion_scores(self, scores_by_date: dict):
-        """{"yyyy-MM-dd": 평균 점수} 형태의 딕셔너리로 히트맵/미니 선그래프 데이터를 갱신한다."""
+    def set_emotion_scores(self, scores_by_date: dict, secret_dates=None):
+        """{"yyyy-MM-dd": 평균 점수} 딕셔너리와 비밀 일기 날짜 목록으로 캘린더 표시를 갱신한다."""
         self._scores_by_date = scores_by_date
+        self._secret_dates = set(secret_dates or [])
         self.updateCells()
         if self._line_overlay is not None:
             self._line_overlay.update()
@@ -273,13 +279,14 @@ class EmotionCalendarWidget(QCalendarWidget):
         # padded_rect를 저장한다 — 그래야 선이 셀 배경 바깥(그리드 여백)으로 삐져나가지 않는다.
         self._last_cell_rects[date_str] = QRect(padded_rect)
         score = self._scores_by_date.get(date_str)
+        is_secret = date_str in self._secret_dates
 
-        if score is None:
+        if score is None and not is_secret:
             super().paintCell(painter, rect, date)
             return
 
         painter.save()
-        bg_color = self._color_for_score(score)
+        bg_color = self._color_for_score(score) if score is not None else QColor(self._COLOR_SECRET_NO_DATA)
         painter.fillRect(padded_rect, bg_color)
 
         text_color = QColor("#1e1e2e") if bg_color.lightnessF() > 0.6 else QColor("#f5f5f5")
@@ -288,6 +295,19 @@ class EmotionCalendarWidget(QCalendarWidget):
         bold_font.setBold(True)
         painter.setFont(bold_font)
         painter.drawText(padded_rect, Qt.AlignCenter, str(date.day()))
+
+        if is_secret:
+            # 비밀 일기 날짜: 보라 테두리 + 🔒 배지로 특별하게 표시 (내용은 여전히 잠김)
+            secret_pen = QPen(self._COLOR_SECRET_BORDER)
+            secret_pen.setWidth(2)
+            painter.setPen(secret_pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(padded_rect.adjusted(1, 1, -1, -1), 4, 4)
+            lock_font = painter.font()
+            lock_font.setBold(False)
+            lock_font.setPointSize(max(7, lock_font.pointSize() - 2))
+            painter.setFont(lock_font)
+            painter.drawText(padded_rect.adjusted(0, 2, -4, 0), Qt.AlignTop | Qt.AlignRight, "🔒")
 
         if date == QDate.currentDate():
             today_pen = QPen(QColor("#f5f5f5"))
@@ -387,6 +407,19 @@ class AppGUI(QMainWindow):
         self._secret_mode = False
         self._secret_color_anim = None
         self._tear_animation_group = None
+        # 편집 폼 날짜 내비게이션(하루 1개 원칙): 프로그램이 dateEdit 값을 바꿀 때
+        # dateChanged 내비게이션이 재귀 발동하지 않도록 막는 플래그와, 비밀 일기가 있는
+        # 날짜로 이동했을 때 되돌아갈 마지막 유효 날짜.
+        self._syncing_editor_date = False
+        self._last_editor_date = QDate.currentDate()
+        # 날짜를 키보드로 입력하는 도중의 중간 값(예: 연도 한 자리씩)마다 폼이 바뀌지 않도록
+        # 짧게 모아서 한 번만 내비게이션한다.
+        self._date_nav_timer = QTimer(self)
+        self._date_nav_timer.setSingleShot(True)
+        self._date_nav_timer.setInterval(350)
+        self._date_nav_timer.timeout.connect(
+            lambda: self._on_editor_date_changed(self.dateEdit.date())
+        )
         # QListWidget은 창이 처음 화면에 표시될 때 내부적으로 0번 항목을 한 번 자동 선택하는
         # 습성이 있어(사용자 조작이 아님), 그로 인한 최초 1회의 currentItemChanged를 걸러내기
         # 위한 플래그. _on_diary_selected에서 소비된다.
@@ -717,6 +750,8 @@ class AppGUI(QMainWindow):
         self.secretDiaryButton.clicked.connect(self._on_open_secret_diary_clicked)
         self.exitSecretModeButton.clicked.connect(self._exit_secret_mode)
         self.emotionCalendar.clicked.connect(self._on_calendar_date_clicked)
+        # 편집 폼의 날짜를 바꾸면 그 날짜의 일기로 폼을 전환한다(하루 1개 원칙)
+        self.dateEdit.dateChanged.connect(self._on_editor_date_edited)
         self.emotionCalendar.currentPageChanged.connect(self._refresh_calendar_scores)
         self.diaryListWidget.currentItemChanged.connect(self._on_diary_selected)
         self.colorComboBox.currentTextChanged.connect(self.drawingCanvas.set_pen_color)
@@ -765,7 +800,7 @@ class AppGUI(QMainWindow):
     def _enter_secret_mode(self):
         """비밀 일기장 모드로 전환: 목록을 숨겨진 일기로 바꾸고, 편집을 읽기 전용으로 잠그고, 색상 연출을 시작한다."""
         self._secret_mode = True
-        self._on_new_clicked()
+        self._clear_editor_form()
         self.secretDiaryButton.setVisible(False)
         self.exitSecretModeButton.setVisible(True)
         self.newButton.setEnabled(False)
@@ -784,7 +819,7 @@ class AppGUI(QMainWindow):
         self.newButton.setEnabled(True)
         self.saveButton.setEnabled(True)
         self._set_form_read_only(False)
-        self._on_new_clicked()
+        self._clear_editor_form()
         self._load_diary_list()
         self.rightStack.setCurrentIndex(0)
 
@@ -985,6 +1020,16 @@ class AppGUI(QMainWindow):
         if not title:
             title = f"{date_str} 일기"
 
+        # 하루 1개 원칙: 그 날짜에 비밀 일기가 있으면 일반 저장으로 덮어쓰지 않는다
+        existing_same_date = self._diary_service.find_diary_for_date(date_str)
+        if (
+            existing_same_date is not None
+            and existing_same_date.is_hidden
+            and existing_same_date.id != self._current_diary_id
+        ):
+            self.display_alert("그 날짜에는 이미 비밀 일기가 있어 저장할 수 없습니다.")
+            return
+
         # 그림 이미지 저장 로직
         image_data = None
         if self.drawingCanvas.is_modified():
@@ -1029,7 +1074,7 @@ class AppGUI(QMainWindow):
         if is_hidden_val:
             # 비밀 일기는 저장/AI 처리를 시작하기 전에 먼저 찢는 연출을 보여준다
             def _after_tear():
-                self._on_new_clicked()
+                self._clear_editor_form()
                 self._run_save_and_analyze(save_kwargs, image_base64, w_val)
 
             self._play_tear_animation(on_finished=_after_tear)
@@ -1051,7 +1096,7 @@ class AppGUI(QMainWindow):
         if reply == QMessageBox.Yes:
             success = self._diary_service.delete_diary(self._current_diary_id)
             if success:
-                self._on_new_clicked()
+                self._clear_editor_form()
                 self._load_diary_list()
                 self._set_status_message("🗑️ 일기가 삭제되었습니다.")
                 self.rightStack.setCurrentIndex(0)
@@ -1059,9 +1104,22 @@ class AppGUI(QMainWindow):
                 self.display_alert("삭제에 실패했습니다.")
 
     def _on_new_clicked(self):
-        """'새 일기' 버튼 클릭: 입력 필드를 초기화한다."""
+        """'새 일기' 버튼 클릭: 입력 필드를 초기화한다.
+
+        하루 1개 원칙이라 오늘 일기가 이미 있으면 그 일기를 이어서 편집하도록 불러온다.
+        """
+        self._clear_editor_form()
+        self._sync_form_to_date(QDate.currentDate())
+
+    def _clear_editor_form(self):
+        """편집 폼을 오늘 날짜의 빈 새 일기 상태로 비운다(일기 자동 로드 없음)."""
+        self._reset_form_fields()
+        self._set_editor_date(QDate.currentDate())
+        self._set_status_message("새 일기를 작성해 보세요. ✍️")
+
+    def _reset_form_fields(self):
+        """날짜를 제외한 편집 폼 입력값을 새 일기 상태로 초기화한다."""
         self._current_diary_id = None
-        self.dateEdit.setDate(QDate.currentDate())
         self.titleEdit.clear()
         self.locationLineEdit.setCurrentText("")
         self.actualWeatherComboBox.setCurrentText(MANUAL_WEATHER_OPTIONS[0])
@@ -1076,7 +1134,50 @@ class AppGUI(QMainWindow):
         self.scoreLabel.setText(f"감정 상태: {DEFAULT_EMOTION} (0점, 티어: C)")
         self.deleteButton.setEnabled(False)
         self.diaryListWidget.clearSelection()
-        self._set_status_message("새 일기를 작성해 보세요. ✍️")
+
+    def _set_editor_date(self, date: QDate):
+        """날짜 변경 내비게이션을 발동시키지 않고 dateEdit 값을 바꾼다."""
+        self._date_nav_timer.stop()
+        self._syncing_editor_date = True
+        try:
+            self.dateEdit.setDate(date)
+        finally:
+            self._syncing_editor_date = False
+        self._last_editor_date = date
+
+    def _sync_form_to_date(self, date: QDate) -> bool:
+        """편집 폼이 해당 날짜의 일기를 보여주도록 맞춘다(하루 1개 원칙).
+
+        일기가 있으면 불러오고, 없으면 작성 중이던 입력은 유지한 채 새 일기 모드가 된다.
+        비밀 일기가 있는 날짜면 폼을 건드리지 않고 False를 반환한다(알림/되돌리기는 호출자 몫).
+        """
+        diary = self._diary_service.find_diary_for_date(date.toString("yyyy-MM-dd"))
+        if diary is None:
+            if self._current_diary_id is not None:
+                self._reset_form_fields()
+                self._set_status_message("새 일기를 작성해 보세요. ✍️")
+            return True
+        if diary.is_hidden:
+            return False
+        if diary.id != self._current_diary_id:
+            self._load_diary_into_form(diary)
+        return True
+
+    def _on_editor_date_edited(self, _date: QDate):
+        """dateEdit의 dateChanged: 키 입력 도중의 중간 값을 걸러내기 위해 잠시 모았다가 내비게이션한다."""
+        if self._syncing_editor_date or self._secret_mode:
+            return
+        self._date_nav_timer.start()
+
+    def _on_editor_date_changed(self, date: QDate):
+        """편집 폼의 날짜가 확정되면 그 날짜의 일기로 폼을 전환한다."""
+        if self._secret_mode:
+            return
+        if self._sync_form_to_date(date):
+            self._last_editor_date = date
+        else:
+            self.display_alert("그 날짜에는 비밀 일기가 있어요. 비밀 일기장에서 확인해 주세요.")
+            self._set_editor_date(self._last_editor_date)
 
     def _on_diary_selected(self, current: QListWidgetItem, previous):
         """일기 목록에서 항목 선택 시 내용을 표시한다."""
@@ -1103,7 +1204,7 @@ class AppGUI(QMainWindow):
     def _load_diary_into_form(self, diary):
         """일기 엔티티를 편집 폼에 채우고 편집 페이지로 전환한다 (목록 선택/캘린더 날짜 클릭이 공유, 7-8)."""
         self._current_diary_id = diary.id
-        self.dateEdit.setDate(QDate.fromString(diary.date, "yyyy-MM-dd"))
+        self._set_editor_date(QDate.fromString(diary.date, "yyyy-MM-dd"))
         self.titleEdit.setText(diary.title)
         self.locationLineEdit.setCurrentText(diary.weather.location)
         # 날씨 로드 (하루 하나만 저장, 7-9-2)
@@ -1171,20 +1272,36 @@ class AppGUI(QMainWindow):
         self.rightStack.setCurrentIndex(1)
 
     def _refresh_calendar_scores(self):
-        """감정 점수 히트맵 데이터를 다시 조회해 캘린더에 반영한다."""
-        self.emotionCalendar.set_emotion_scores(self._diary_service.get_emotion_scores_by_date())
+        """감정 점수 히트맵 데이터와 비밀 일기 날짜를 다시 조회해 캘린더에 반영한다."""
+        self.emotionCalendar.set_emotion_scores(
+            self._diary_service.get_emotion_scores_by_date(),
+            self._diary_service.get_secret_diary_dates(),
+        )
 
     def _on_calendar_date_clicked(self, date: QDate):
         """캘린더에서 날짜를 클릭했을 때의 진입 동선을 처리한다(7-8).
 
         빈 날짜 → 그 날짜로 새 일기 작성. 일기가 있는 날짜 → 목록에서 선택한 것과 동일하게 편집
-        페이지로 로드. 단, 그 일기가 비밀 일기면 선택 자체를 막고 안내만 띄운다.
+        페이지로 로드. 비밀 일기는 비밀 일기장 모드에서만 열 수 있고(읽기 전용), 평소에는
+        선택 자체를 막고 안내만 띄운다.
         """
         date_str = date.toString("yyyy-MM-dd")
         diary = self._diary_service.find_diary_for_date(date_str)
+        if self._secret_mode:
+            # 비밀 일기장 모드: 캘린더에서도 비밀 일기를 열람할 수 있다. 새 일기 작성과
+            # 일반 일기 열람은 이 모드의 목적이 아니므로 막는다.
+            if diary is not None and diary.is_hidden:
+                self._load_diary_into_form(diary)
+                self._set_status_message("🔒 비밀 일기장 — 읽기 전용입니다. 나가려면 '나가기'를 눌러주세요.")
+            else:
+                self.display_alert("비밀 일기장 모드에서는 비밀 일기만 열 수 있습니다.")
+            return
         if diary is None:
-            self._on_new_clicked()
-            self.dateEdit.setDate(date)
+            # _on_new_clicked는 오늘 일기가 있으면 그걸 로드해버리므로, 클릭한 날짜의
+            # 빈 폼이 필요할 때는 필드 초기화 + 날짜 지정만 직접 한다.
+            self._reset_form_fields()
+            self._set_editor_date(date)
+            self._set_status_message("새 일기를 작성해 보세요. ✍️")
             self.rightStack.setCurrentIndex(1)
             return
         if diary.is_hidden:

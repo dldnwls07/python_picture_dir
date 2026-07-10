@@ -33,12 +33,19 @@ class DiaryServiceEmotionScoresTest(unittest.TestCase):
         scores = self.service.get_emotion_scores_by_date()
         self.assertEqual(scores["2026-06-01"], 1.0)
 
-    def test_excludes_hidden_diaries(self):
+    def test_includes_hidden_diaries_so_graph_stays_continuous(self):
         self._save("2026-06-01", 3)
         self._save("2026-06-02", 5, is_hidden=True)
         scores = self.service.get_emotion_scores_by_date()
         self.assertIn("2026-06-01", scores)
-        self.assertNotIn("2026-06-02", scores)
+        self.assertIn("2026-06-02", scores)
+        self.assertEqual(scores["2026-06-02"], 5.0)
+
+    def test_get_secret_diary_dates(self):
+        self._save("2026-06-01", 3)
+        self._save("2026-06-02", 5, is_hidden=True)
+        self._save("2026-06-03", -1, is_hidden=True)
+        self.assertEqual(self.service.get_secret_diary_dates(), ["2026-06-02", "2026-06-03"])
 
     def test_respects_date_range(self):
         self._save("2026-06-01", 3)

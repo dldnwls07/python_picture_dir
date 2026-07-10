@@ -99,11 +99,14 @@ class EmotionCalendarFrame(ttk.Frame):
     _COLOR_POSITIVE_EXTREME = (255, 159, 67)
     _COLOR_NEGATIVE_MILD = (214, 222, 235)
     _COLOR_NEGATIVE_EXTREME = (173, 189, 216)
+    # 비밀 일기 날짜 강조 — 히트맵 팔레트에 없는 보라 계열이라 어떤 셀 위에서도 구분된다
+    _COLOR_SECRET_BORDER = "#8e44ad"
 
     def __init__(self, parent, on_date_click=None, **kwargs):
         super().__init__(parent, style="TFrame", **kwargs)
         self._on_date_click = on_date_click
         self._scores_by_date = {}
+        self._secret_dates = set()
         today = datetime.now()
         self._current_year = today.year
         self._current_month = today.month
@@ -134,9 +137,10 @@ class EmotionCalendarFrame(ttk.Frame):
         self._canvas.bind("<Configure>", lambda e: self._render_calendar())
         self._canvas.bind("<Button-1>", self._on_canvas_click)
 
-    def set_emotion_scores(self, scores_by_date: dict):
-        """{"yyyy-MM-dd": 평균 점수} 형태의 딕셔너리로 히트맵/미니 선그래프 데이터를 갱신한다."""
+    def set_emotion_scores(self, scores_by_date: dict, secret_dates=None):
+        """{"yyyy-MM-dd": 평균 점수} 딕셔너리와 비밀 일기 날짜 목록으로 캘린더 표시를 갱신한다."""
         self._scores_by_date = scores_by_date
+        self._secret_dates = set(secret_dates or [])
         self._render_calendar()
 
     def _go_prev_month(self):
@@ -191,15 +195,24 @@ class EmotionCalendarFrame(ttk.Frame):
                 score = self._scores_by_date.get(date_str)
                 fill = self._color_for_score(score)
 
+                is_secret = date_str in self._secret_dates
                 self._canvas.create_rectangle(
                     x0 + pad, y0 + pad, x1 - pad, y1 - pad,
-                    fill=fill, outline=COLOR_BORDER, width=1,
+                    fill=fill,
+                    outline=self._COLOR_SECRET_BORDER if is_secret else COLOR_BORDER,
+                    width=2 if is_secret else 1,
                 )
                 self._canvas.create_text(
                     x0 + pad + 6, y0 + pad + 4, anchor="nw",
                     text=str(day), fill=self._text_color_for(fill),
                     font=("Malgun Gothic", 10),
                 )
+                if is_secret:
+                    # 비밀 일기 날짜: 보라 테두리 + 🔒 배지로 특별하게 표시 (내용은 여전히 잠김)
+                    self._canvas.create_text(
+                        x1 - pad - 4, y0 + pad + 3, anchor="ne",
+                        text="🔒", font=("Segoe UI Emoji", 8),
+                    )
                 self._cell_bounds.append((x0, y0, x1, y1, date_str))
                 week_points.append((x0 + cell_w / 2, score))
 
@@ -271,6 +284,8 @@ class AppGUI(tk.Tk):
         # 현재 선택된 일기 ID (수정 모드 식별용)
         self._current_diary_id = None
         self._list_diary_ids = []  # 리스트박스 항목 매핑용 ID 리스트
+        # 날짜 내비게이션(하루 1개 원칙): 비밀 일기가 있는 날짜로 이동했을 때 되돌아갈 마지막 유효 날짜
+        self._last_editor_date = datetime.now().strftime("%Y-%m-%d")
         
         # 그림판 상태 관리용
         self._last_x = None
@@ -288,7 +303,7 @@ class AppGUI(tk.Tk):
         self._init_ui()
         self._connect_events()
         self._load_diary_list()
-        self._on_new_clicked()
+        self._clear_editor_form()
         self._show_calendar_page()  # 앱은 항상 캘린더(MAIN) 페이지로 시작한다(7-2)
 
     def _init_ui(self):
@@ -418,6 +433,9 @@ class AppGUI(tk.Tk):
         self.date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
         self.date_entry = ttk.Entry(meta_frame, textvariable=self.date_var, width=15, font=("Malgun Gothic", 10))
         self.date_entry.grid(row=1, column=0, sticky="w", pady=(5, 0), padx=(0, 20))
+        # 날짜 입력을 확정(Enter/포커스 아웃)하면 그 날짜의 일기로 폼을 전환한다(하루 1개 원칙)
+        self.date_entry.bind("<Return>", self._on_editor_date_committed)
+        self.date_entry.bind("<FocusOut>", self._on_editor_date_committed)
 
         # 제목
         ttk.Label(meta_frame, text="제목", style="Card.TLabel", font=("Malgun Gothic", 10, "bold")).grid(row=0, column=1, sticky="w")
@@ -680,7 +698,7 @@ class AppGUI(tk.Tk):
     def _enter_secret_mode(self):
         """비밀 일기장 모드로 전환: 목록을 숨겨진 일기로 바꾸고, 편집을 읽기 전용으로 잠그고, 색상 연출을 시작한다."""
         self._secret_mode = True
-        self._on_new_clicked()
+        self._clear_editor_form()
         self.btn_secret_diary.pack_forget()
         self.btn_exit_secret.pack(fill="x", pady=(0, 4))
         self.btn_new.configure(state="disabled")
@@ -699,7 +717,7 @@ class AppGUI(tk.Tk):
         self.btn_new.configure(state="normal")
         self.btn_save.configure(state="normal")
         self._set_form_read_only(False)
-        self._on_new_clicked()
+        self._clear_editor_form()
         self._load_diary_list()
         self._show_calendar_page()
 
@@ -928,6 +946,7 @@ class AppGUI(tk.Tk):
         """일기 엔티티를 편집 폼에 채우고 편집 페이지로 전환한다 (목록 선택/캘린더 날짜 클릭이 공유, 7-8)."""
         self._current_diary_id = diary.id
         self.date_var.set(diary.date)
+        self._last_editor_date = diary.date
         self.title_var.set(diary.title)
         self.location_var.set(diary.weather.location)
         saved_actual_weather = diary.weather.actual_weather
@@ -1025,18 +1044,38 @@ class AppGUI(tk.Tk):
 
     def _refresh_calendar_scores(self):
         """감정 점수 히트맵 데이터를 다시 조회해 캘린더에 반영한다."""
-        self.emotion_calendar.set_emotion_scores(self._diary_service.get_emotion_scores_by_date())
+        self.emotion_calendar.set_emotion_scores(
+            self._diary_service.get_emotion_scores_by_date(),
+            self._diary_service.get_secret_diary_dates(),
+        )
 
     def _on_calendar_date_clicked(self, date_str: str):
         """캘린더에서 날짜를 클릭했을 때의 진입 동선을 처리한다(7-8).
 
         빈 날짜 → 그 날짜로 새 일기 작성. 일기가 있는 날짜 → 목록에서 선택한 것과 동일하게 편집
-        페이지로 로드. 단, 그 일기가 비밀 일기면 선택 자체를 막고 안내만 띄운다.
+        페이지로 로드. 비밀 일기는 비밀 일기장 모드에서만 열 수 있고(읽기 전용), 평소에는
+        선택 자체를 막고 안내만 띄운다.
         """
         diary = self._diary_service.find_diary_for_date(date_str)
+        if self._secret_mode:
+            # 비밀 일기장 모드: 캘린더에서도 비밀 일기를 열람할 수 있다. 새 일기 작성과
+            # 일반 일기 열람은 이 모드의 목적이 아니므로 막는다.
+            if diary is not None and diary.is_hidden:
+                self._load_diary_into_form(diary)
+                self.statusbar.config(
+                    text="🔒 비밀 일기장 — 읽기 전용입니다. 나가려면 '나가기'를 눌러주세요.",
+                    fg=COLOR_TEXT_SUB,
+                )
+            else:
+                self.display_alert("비밀 일기장 모드에서는 비밀 일기만 열 수 있습니다.")
+            return
         if diary is None:
-            self._on_new_clicked()
+            # _on_new_clicked는 오늘 일기가 있으면 그걸 로드해버리므로, 클릭한 날짜의
+            # 빈 폼이 필요할 때는 필드 초기화 + 날짜 지정만 직접 한다.
+            self._reset_form_fields()
             self.date_var.set(date_str)
+            self._last_editor_date = date_str
+            self.statusbar.config(text="새 일기를 작성해 보세요. ✍️", fg=COLOR_TEXT_SUB)
             self._show_editor_page()
             return
         if diary.is_hidden:
@@ -1052,6 +1091,16 @@ class AppGUI(tk.Tk):
         title = self.title_var.get().strip()
         content = self.content_text.get("1.0", tk.END).strip()
         location_name = self.location_var.get().strip()
+
+        # 하루 1개 원칙: 그 날짜에 비밀 일기가 있으면 일반 저장으로 덮어쓰지 않는다
+        existing_same_date = self._diary_service.find_diary_for_date(date_str)
+        if (
+            existing_same_date is not None
+            and existing_same_date.is_hidden
+            and existing_same_date.id != self._current_diary_id
+        ):
+            self.display_alert("그 날짜에는 이미 비밀 일기가 있어 저장할 수 없습니다.")
+            return
         # 날씨 처리 (하루 하나만 선택, 7-9-2)
         w_val = self.actual_weather_var.get().strip()
 
@@ -1103,7 +1152,7 @@ class AppGUI(tk.Tk):
         if is_hidden_val:
             # 비밀 일기는 저장/AI 처리를 시작하기 전에 먼저 찢는 연출을 보여준다
             def _after_tear():
-                self._on_new_clicked()
+                self._clear_editor_form()
                 self._run_save_and_analyze(save_kwargs, image_base64, w_val)
 
             self._play_tear_effect(on_finished=_after_tear)
@@ -1120,7 +1169,7 @@ class AppGUI(tk.Tk):
         if reply:
             success = self._diary_service.delete_diary(self._current_diary_id)
             if success:
-                self._on_new_clicked()
+                self._clear_editor_form()
                 self._load_diary_list()
                 self.statusbar.config(text="🗑️ 일기가 삭제되었습니다.", fg=COLOR_TEXT_SUB)
                 self._show_calendar_page()
@@ -1128,9 +1177,24 @@ class AppGUI(tk.Tk):
                 self.display_alert("삭제에 실패했습니다.")
 
     def _on_new_clicked(self):
-        """입력 필드 초기화 (신규 일기 모드)."""
+        """입력 필드 초기화 (신규 일기 모드).
+
+        하루 1개 원칙이라 오늘 일기가 이미 있으면 그 일기를 이어서 편집하도록 불러온다.
+        """
+        self._clear_editor_form()
+        self._sync_form_to_date(self.date_var.get())
+
+    def _clear_editor_form(self):
+        """편집 폼을 오늘 날짜의 빈 새 일기 상태로 비운다(일기 자동 로드 없음)."""
+        self._reset_form_fields()
+        today = datetime.now().strftime("%Y-%m-%d")
+        self.date_var.set(today)
+        self._last_editor_date = today
+        self.statusbar.config(text="새 일기를 작성해 보세요. ✍️", fg=COLOR_TEXT_SUB)
+
+    def _reset_form_fields(self):
+        """날짜를 제외한 편집 폼 입력값을 새 일기 상태로 초기화한다."""
         self._current_diary_id = None
-        self.date_var.set(datetime.now().strftime("%Y-%m-%d"))
         self.title_var.set("")
         self.location_var.set("")
         self.actual_weather_var.set(MANUAL_WEATHER_OPTIONS[0])
@@ -1151,7 +1215,42 @@ class AppGUI(tk.Tk):
         self.btn_delete.configure(bg=COLOR_BORDER)
         
         self.diary_listbox.selection_clear(0, tk.END)
-        self.statusbar.config(text="새 일기를 작성해 보세요. ✍️", fg=COLOR_TEXT_SUB)
+
+    def _sync_form_to_date(self, date_str: str) -> bool:
+        """편집 폼이 해당 날짜의 일기를 보여주도록 맞춘다(하루 1개 원칙).
+
+        일기가 있으면 불러오고, 없으면 작성 중이던 입력은 유지한 채 새 일기 모드가 된다.
+        비밀 일기가 있는 날짜면 폼을 건드리지 않고 False를 반환한다(알림/되돌리기는 호출자 몫).
+        """
+        diary = self._diary_service.find_diary_for_date(date_str)
+        if diary is None:
+            if self._current_diary_id is not None:
+                self._reset_form_fields()
+                self.date_var.set(date_str)
+                self.statusbar.config(text="새 일기를 작성해 보세요. ✍️", fg=COLOR_TEXT_SUB)
+            return True
+        if diary.is_hidden:
+            return False
+        if diary.id != self._current_diary_id:
+            self._load_diary_into_form(diary)
+        return True
+
+    def _on_editor_date_committed(self, event=None):
+        """날짜 입력 확정(Enter/포커스 아웃) 시 그 날짜의 일기로 폼을 전환한다."""
+        if self._secret_mode:
+            return
+        date_str = self.date_var.get().strip()
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            # 형식이 잘못된 날짜는 마지막 유효 날짜로 되돌린다
+            self.date_var.set(self._last_editor_date)
+            return
+        if self._sync_form_to_date(date_str):
+            self._last_editor_date = date_str
+        else:
+            self.display_alert("그 날짜에는 비밀 일기가 있어요. 비밀 일기장에서 확인해 주세요.")
+            self.date_var.set(self._last_editor_date)
 
     def _update_weather_ui(self, result: dict):
         """사용자 선택 감정/날씨 결과를 UI에 반영한다."""
@@ -1527,7 +1626,7 @@ class AppGUI(tk.Tk):
                 )
                 # 신규 작성의 경우 바로 새 일기 모드로 전환
                 if action == "저장":
-                    self._on_new_clicked()
+                    self._clear_editor_form()
 
             if dialog.winfo_exists():
                 status_var.set("🤖 AI가 조언 중입니다...\n잠시만 기다려주세요. ✨")

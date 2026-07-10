@@ -229,6 +229,72 @@ class AppGuiTest(unittest.TestCase):
         self.assertFalse(hasattr(self.window, "_hovered_diary_item"))
         self.assertFalse(hasattr(self.window, "_on_diary_item_hovered"))
 
+    # ── 하루 1개 원칙: 자동 병합 & 날짜 내비게이션 ────────────────
+
+    def test_save_merges_into_existing_diary_on_same_date(self):
+        """diary_id 없이 저장해도 같은 날짜의 기존 일기를 수정하는 것으로 병합해야 한다."""
+        service = self.window._diary_service
+        service.generate_summary = MagicMock(return_value="")
+        kwargs = dict(
+            content="내용", location_name="", actual_weather="",
+            emotion1="행복했어요", emotion2="", is_hidden=False,
+        )
+        ok1, d1 = service.save_diary(diary_id=None, date="2026-07-01", title="첫 번째", **kwargs)
+        ok2, d2 = service.save_diary(diary_id=None, date="2026-07-01", title="두 번째", **kwargs)
+        self.assertTrue(ok1)
+        self.assertTrue(ok2)
+        self.assertEqual(d1.id, d2.id)
+        same_date = [d for d in self.repo.find_all() if d.date == "2026-07-01"]
+        self.assertEqual(len(same_date), 1)
+        self.assertEqual(same_date[0].title, "두 번째")
+        self.assertEqual(same_date[0].created_at, d1.created_at)
+
+    def test_save_is_blocked_when_hidden_diary_exists_on_date(self):
+        """비밀 일기가 있는 날짜에는 일반 저장이 병합 대신 거부되어야 한다."""
+        self._save_diary("2026-07-02", is_hidden=True)
+        service = self.window._diary_service
+        service.generate_summary = MagicMock(return_value="")
+        ok, diary = service.save_diary(
+            diary_id=None, date="2026-07-02", title="일반 일기", content="내용",
+            location_name="", actual_weather="", emotion1="행복했어요", emotion2="",
+            is_hidden=False,
+        )
+        self.assertFalse(ok)
+        self.assertIsNone(diary)
+        self.assertEqual(len([d for d in self.repo.find_all() if d.date == "2026-07-02"]), 1)
+
+    def test_editor_date_change_loads_existing_diary(self):
+        from PyQt5.QtCore import QDate
+        diary = self._save_diary("2026-03-01")
+        self.window._on_editor_date_changed(QDate.fromString("2026-03-01", "yyyy-MM-dd"))
+        self.assertEqual(self.window._current_diary_id, diary.id)
+        self.assertEqual(self.window.titleEdit.text(), "테스트 일기")
+
+    def test_editor_date_change_to_empty_date_keeps_draft(self):
+        from PyQt5.QtCore import QDate
+        self.window._on_new_clicked()
+        self.window.contentEdit.setPlainText("초안 내용")
+        self.window._on_editor_date_changed(QDate.fromString("2026-04-10", "yyyy-MM-dd"))
+        self.assertIsNone(self.window._current_diary_id)
+        self.assertEqual(self.window.contentEdit.toPlainText(), "초안 내용")
+
+    @patch("PyQt5.QtWidgets.QMessageBox.information")
+    def test_editor_date_change_to_hidden_date_reverts(self, mock_info):
+        from PyQt5.QtCore import QDate
+        self._save_diary("2026-03-02", is_hidden=True)
+        self.window._on_editor_date_changed(QDate.fromString("2026-03-05", "yyyy-MM-dd"))
+        self.window._on_editor_date_changed(QDate.fromString("2026-03-02", "yyyy-MM-dd"))
+        mock_info.assert_called_once()
+        self.assertEqual(self.window.dateEdit.date().toString("yyyy-MM-dd"), "2026-03-05")
+
+    def test_new_diary_button_opens_todays_diary_if_exists(self):
+        from PyQt5.QtCore import QDate
+        today = QDate.currentDate().toString("yyyy-MM-dd")
+        diary = self._save_diary(today)
+        self.window._on_new_clicked()
+        self.assertEqual(self.window._current_diary_id, diary.id)
+        self.assertEqual(self.window.titleEdit.text(), "테스트 일기")
+
 
 if __name__ == "__main__":
     unittest.main()

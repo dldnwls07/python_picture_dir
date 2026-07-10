@@ -82,6 +82,25 @@ class AppTkinterTest(unittest.TestCase):
         self.assertEqual(len(alerts), 1)
         self.assertTrue(self.window.calendar_page.winfo_ismapped())
 
+    def test_calendar_click_opens_hidden_diary_in_secret_mode(self):
+        diary = self._save_diary("2026-03-04", is_hidden=True)
+        self.window._enter_secret_mode()
+        self.window._on_calendar_date_clicked("2026-03-04")
+        self.window.update()
+        self.assertTrue(self.window.editor_page.winfo_ismapped())
+        self.assertEqual(self.window._current_diary_id, diary.id)
+        self.assertEqual(self.window.title_var.get(), "테스트 일기")
+
+    def test_calendar_click_on_normal_diary_blocked_in_secret_mode(self):
+        self._save_diary("2026-03-05")
+        self.window._enter_secret_mode()
+        alerts = []
+        self.window.display_alert = lambda msg: alerts.append(msg)
+        self.window._on_calendar_date_clicked("2026-03-05")
+        self.window.update()
+        self.assertEqual(len(alerts), 1)
+        self.assertIsNone(self.window._current_diary_id)
+
     def test_delete_returns_to_calendar_page(self):
         diary = self._save_diary("2026-03-03")
         self.window._load_diary_into_form(diary)
@@ -132,6 +151,33 @@ class AppTkinterTest(unittest.TestCase):
 
         cal._on_canvas_click(FakeEvent())
         self.assertEqual(clicked, [date_str])
+
+    # ── 하루 1개 원칙: 날짜 내비게이션 ────────────────────────────
+
+    def test_editor_date_commit_loads_existing_diary(self):
+        diary = self._save_diary("2026-03-05")
+        self.window.date_var.set("2026-03-05")
+        self.window._on_editor_date_committed()
+        self.assertEqual(self.window._current_diary_id, diary.id)
+        self.assertEqual(self.window.title_var.get(), "테스트 일기")
+
+    def test_editor_date_commit_to_hidden_date_reverts(self):
+        self._save_diary("2026-03-06", is_hidden=True)
+        alerts = []
+        self.window.display_alert = lambda msg: alerts.append(msg)
+        self.window.date_var.set("2026-03-07")
+        self.window._on_editor_date_committed()
+        self.window.date_var.set("2026-03-06")
+        self.window._on_editor_date_committed()
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(self.window.date_var.get(), "2026-03-07")
+
+    def test_editor_invalid_date_reverts_to_last_valid(self):
+        self.window.date_var.set("2026-03-08")
+        self.window._on_editor_date_committed()
+        self.window.date_var.set("not-a-date")
+        self.window._on_editor_date_committed()
+        self.assertEqual(self.window.date_var.get(), "2026-03-08")
 
     def test_emotion_graph_button_opens_dialog_without_crash(self):
         self._save_diary("2026-06-01")
