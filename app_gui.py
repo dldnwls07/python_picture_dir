@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import (
     QDate, Qt, QThread, pyqtSignal, QEvent, QVariantAnimation, QPropertyAnimation,
-    QParallelAnimationGroup, QEasingCurve, QAbstractAnimation, QRect, QPointF,
+    QParallelAnimationGroup, QEasingCurve, QAbstractAnimation, QRect, QPoint, QPointF,
 )
 from PyQt5.QtGui import QPixmap, QColor, QPainter, QPen, QImage, QPainterPath, QPolygonF
 from PyQt5 import uic
@@ -848,8 +848,10 @@ class AppGUI(QMainWindow):
 
     def _split_pixmap_zigzag(self, pixmap: QPixmap):
         """스냅샷 이미지를 지그재그 선을 기준으로 위/아래 두 조각으로 나눈다."""
-        width = pixmap.width()
-        height = pixmap.height()
+        # DPR을 반영한 논리 좌표 기준으로 경로를 계산해야 고배율 화면에서도 어긋나지 않는다
+        dpr = pixmap.devicePixelRatio()
+        width = pixmap.width() / dpr
+        height = pixmap.height() / dpr
         mid = height / 2
         amplitude = 12
         step = 24
@@ -870,6 +872,7 @@ class AppGUI(QMainWindow):
         top_path.closeSubpath()
 
         top_pixmap = QPixmap(pixmap.size())
+        top_pixmap.setDevicePixelRatio(pixmap.devicePixelRatio())
         top_pixmap.fill(Qt.transparent)
         painter = QPainter(top_pixmap)
         painter.setClipPath(top_path)
@@ -881,6 +884,7 @@ class AppGUI(QMainWindow):
         bottom_path = full_path.subtracted(top_path)
 
         bottom_pixmap = QPixmap(pixmap.size())
+        bottom_pixmap.setDevicePixelRatio(pixmap.devicePixelRatio())
         bottom_pixmap.fill(Qt.transparent)
         painter = QPainter(bottom_pixmap)
         painter.setClipPath(bottom_path)
@@ -892,10 +896,12 @@ class AppGUI(QMainWindow):
     def _play_tear_animation(self, on_finished=None):
         """편집 폼을 지그재그로 찢어 반대 방향으로 날아가며 사라지는 연출을 재생한다."""
         widget = self.rightPanel
-        parent = widget.parentWidget()
+        # 부모가 QSplitter라 QLabel을 그 자식으로 만들면 새 구획으로 편입되어 레이아웃이 깨진다.
+        # 레이아웃 관리를 받지 않는 centralWidget을 오버레이 부모로 쓰고 좌표를 변환한다.
+        parent = self.centralWidget()
         pixmap = widget.grab()
         top_pixmap, bottom_pixmap = self._split_pixmap_zigzag(pixmap)
-        geom = widget.geometry()
+        geom = QRect(widget.mapTo(parent, QPoint(0, 0)), widget.size())
         duration = 650
 
         top_label = QLabel(parent)
@@ -966,8 +972,7 @@ class AppGUI(QMainWindow):
         location_name = self.locationLineEdit.currentText().strip()
 
         # 날씨 처리 (하루 하나만 선택, 7-9-2)
-        w_val1 = self.actualWeatherComboBox.currentText().strip()
-        w_val2 = ""
+        w_val = self.actualWeatherComboBox.currentText().strip()
 
         # 감정 1, 2 처리
         e_label1 = self.emotionComboBox.currentText().strip()
@@ -1013,8 +1018,7 @@ class AppGUI(QMainWindow):
             title=title,
             content=content,
             location_name=location_name,
-            actual_weather1=w_val1,
-            actual_weather2=w_val2,
+            actual_weather=w_val,
             emotion1=e_label1,
             emotion2=e_label2,
             is_hidden=is_hidden_val,
@@ -1026,11 +1030,11 @@ class AppGUI(QMainWindow):
             # 비밀 일기는 저장/AI 처리를 시작하기 전에 먼저 찢는 연출을 보여준다
             def _after_tear():
                 self._on_new_clicked()
-                self._run_save_and_analyze(save_kwargs, image_base64, w_val1, w_val2)
+                self._run_save_and_analyze(save_kwargs, image_base64, w_val)
 
             self._play_tear_animation(on_finished=_after_tear)
         else:
-            self._run_save_and_analyze(save_kwargs, image_base64, w_val1, w_val2)
+            self._run_save_and_analyze(save_kwargs, image_base64, w_val)
 
     def _on_delete_clicked(self):
         """'삭제' 버튼 클릭: 선택된 일기를 삭제한다."""
@@ -1102,25 +1106,12 @@ class AppGUI(QMainWindow):
         self.dateEdit.setDate(QDate.fromString(diary.date, "yyyy-MM-dd"))
         self.titleEdit.setText(diary.title)
         self.locationLineEdit.setCurrentText(diary.weather.location)
-        actual_weather_val = diary.weather.actual_weather
-        actual_weather_text_val = diary.weather.actual_weather_text
-
-        # 날씨 로드 (레거시 데이터에 콤마로 여러 날씨가 저장돼 있어도 첫 번째만 사용, 7-9-2)
-        weathers_emoji = [w.strip() for w in actual_weather_val.split(",") if w.strip()]
-        weathers_text = [w.strip() for w in actual_weather_text_val.split(",") if w.strip()]
-
-        def find_weather_label(emoji, text):
-            label = f"{emoji} {text}".strip()
-            for opt in MANUAL_WEATHER_OPTIONS:
-                if opt.strip() == label:
-                    return opt
-            return None
-
-        if len(weathers_emoji) >= 1:
-            lbl1 = find_weather_label(weathers_emoji[0], weathers_text[0] if len(weathers_text) >= 1 else "")
-            self.actualWeatherComboBox.setCurrentText(lbl1 or MANUAL_WEATHER_OPTIONS[0])
-        else:
-            self.actualWeatherComboBox.setCurrentText(MANUAL_WEATHER_OPTIONS[0])
+        # 날씨 로드 (하루 하나만 저장, 7-9-2)
+        weather_label = f"{diary.weather.actual_weather} {diary.weather.actual_weather_text}".strip()
+        matched = next(
+            (opt for opt in MANUAL_WEATHER_OPTIONS if opt.strip() == weather_label), None
+        )
+        self.actualWeatherComboBox.setCurrentText(matched or MANUAL_WEATHER_OPTIONS[0])
 
         emotion_label_val = diary.emotion_label or DEFAULT_EMOTION
         emotion_label = emotion_label_val
@@ -1374,7 +1365,7 @@ class AppGUI(QMainWindow):
             print(f"캔버스 이미지 Base64 변환 실패: {e}")
             return ""
 
-    def _run_save_and_analyze(self, save_kwargs: dict, image_base64: str, w_val1: str, w_val2: str):
+    def _run_save_and_analyze(self, save_kwargs: dict, image_base64: str, w_val: str):
         """저장 → AI 한 줄 요약 → AI 공감/그림분석을 한 모달 다이얼로그 안에서 순서대로 보여준다."""
         dialog = QDialog(self)
         dialog.setWindowTitle("🤖 AI 공감 일기 도우미")
@@ -1508,9 +1499,8 @@ class AppGUI(QMainWindow):
                         "location_name": diary.weather.location,
                     })
                     self._load_diary_list()
-                    actual_weather_value = f"{w_val1}, {w_val2}" if w_val2 and w_val2 != "선택안함" else w_val1
                     self._set_status_message(
-                        f"✅ 일기가 {action}되었습니다! 감정: {diary.emotion_label} | 현재 날씨: {actual_weather_value}"
+                        f"✅ 일기가 {action}되었습니다! 감정: {diary.emotion_label} | 현재 날씨: {w_val}"
                     )
                 summary_edit.setText(diary.summary or "")
             else:

@@ -132,8 +132,7 @@ class DiaryService:
         title: str,
         content: str,
         location_name: str,
-        actual_weather1: str,
-        actual_weather2: str,
+        actual_weather: str,
         emotion1: str,
         emotion2: str,
         is_hidden: bool,
@@ -145,23 +144,11 @@ class DiaryService:
         image_to_delete_on_success = None
 
         try:
-            # 1. 날씨 정보 처리
-            def get_weather_emoji(val):
-                return val.split(" ")[0] if val else ""
-            def get_weather_text(val):
-                return val.split(" ", 1)[1] if " " in val else val
-
-            emoji1 = get_weather_emoji(actual_weather1)
-            text1 = get_weather_text(actual_weather1)
-
-            if actual_weather2 and actual_weather2 != "선택안함":
-                emoji2 = get_weather_emoji(actual_weather2)
-                text2 = get_weather_text(actual_weather2)
-                actual_weather_emoji = f"{emoji1},{emoji2}"
-                actual_weather_text = f"{text1},{text2}"
-            else:
-                actual_weather_emoji = emoji1
-                actual_weather_text = text1
+            # 1. 날씨 정보 처리 — "☀️ 맑음" 형태의 선택값을 이모지/텍스트로 분리 (하루 하나만 선택)
+            actual_weather_emoji = actual_weather.split(" ")[0] if actual_weather else ""
+            actual_weather_text = (
+                actual_weather.split(" ", 1)[1] if " " in actual_weather else actual_weather
+            )
 
             # 2. 감정 및 감정 점수 산출
             if emotion2 and emotion2 != "선택안함":

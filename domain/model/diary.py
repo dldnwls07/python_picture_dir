@@ -55,10 +55,7 @@ class Diary:
         # 날씨 필터 검사
         from domain.model.value_objects import WEATHER_LABEL_TO_EMOJI
         if category in WEATHER_LABEL_TO_EMOJI:
-            target_emoji = WEATHER_LABEL_TO_EMOJI[category]
-            # actual_weather에 콤마가 여러 개 들어갈 수 있으므로 split 처리
-            emojis = [w.strip() for w in self.weather.actual_weather.split(",")]
-            return target_emoji in emojis
+            return self.weather.actual_weather.strip() == WEATHER_LABEL_TO_EMOJI[category]
 
         # 감정 필터 검사
         score = self.emotion_score.value

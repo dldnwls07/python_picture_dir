@@ -931,25 +931,13 @@ class AppGUI(tk.Tk):
         self.title_var.set(diary.title)
         self.location_var.set(diary.weather.location)
         saved_actual_weather = diary.weather.actual_weather
-        saved_actual_weather_text = diary.weather.actual_weather_text
 
-        # 날씨 1, 2 로드
-        # 날씨 로드 (레거시 데이터에 콤마로 여러 날씨가 저장돼 있어도 첫 번째만 사용, 7-9-2)
-        weathers_emoji = [w.strip() for w in saved_actual_weather.split(",") if w.strip()]
-        weathers_text = [w.strip() for w in saved_actual_weather_text.split(",") if w.strip()]
-
-        def find_weather_label(emoji, text):
-            label = f"{emoji} {text}".strip()
-            for opt in MANUAL_WEATHER_OPTIONS:
-                if opt.strip() == label:
-                    return opt
-            return None
-
-        if len(weathers_emoji) >= 1:
-            lbl1 = find_weather_label(weathers_emoji[0], weathers_text[0] if len(weathers_text) >= 1 else "")
-            self.actual_weather_var.set(lbl1 or MANUAL_WEATHER_OPTIONS[0])
-        else:
-            self.actual_weather_var.set(MANUAL_WEATHER_OPTIONS[0])
+        # 날씨 로드 (하루 하나만 저장, 7-9-2)
+        weather_label = f"{saved_actual_weather} {diary.weather.actual_weather_text}".strip()
+        matched = next(
+            (opt for opt in MANUAL_WEATHER_OPTIONS if opt.strip() == weather_label), None
+        )
+        self.actual_weather_var.set(matched or MANUAL_WEATHER_OPTIONS[0])
 
         # 감정 1, 2 로드
         saved_emotion_label = diary.emotion_label or DEFAULT_EMOTION
@@ -1065,8 +1053,7 @@ class AppGUI(tk.Tk):
         content = self.content_text.get("1.0", tk.END).strip()
         location_name = self.location_var.get().strip()
         # 날씨 처리 (하루 하나만 선택, 7-9-2)
-        w_val1 = self.actual_weather_var.get().strip()
-        w_val2 = ""
+        w_val = self.actual_weather_var.get().strip()
 
         # 감정 1, 2 처리
         e_label1 = self.emotion_var.get().strip()
@@ -1105,8 +1092,7 @@ class AppGUI(tk.Tk):
             title=title,
             content=content,
             location_name=location_name,
-            actual_weather1=w_val1,
-            actual_weather2=w_val2,
+            actual_weather=w_val,
             emotion1=e_label1,
             emotion2=e_label2,
             is_hidden=is_hidden_val,
@@ -1118,11 +1104,11 @@ class AppGUI(tk.Tk):
             # 비밀 일기는 저장/AI 처리를 시작하기 전에 먼저 찢는 연출을 보여준다
             def _after_tear():
                 self._on_new_clicked()
-                self._run_save_and_analyze(save_kwargs, image_base64, w_val1, w_val2)
+                self._run_save_and_analyze(save_kwargs, image_base64, w_val)
 
             self._play_tear_effect(on_finished=_after_tear)
         else:
-            self._run_save_and_analyze(save_kwargs, image_base64, w_val1, w_val2)
+            self._run_save_and_analyze(save_kwargs, image_base64, w_val)
 
     def _on_delete_clicked(self):
         """선택된 일기 삭제."""
@@ -1390,7 +1376,7 @@ class AppGUI(tk.Tk):
                 print(f"PIL 이미지 Base64 변환 실패: {e}")
         return ""
 
-    def _run_save_and_analyze(self, save_kwargs: dict, image_base64: str, w_val1: str, w_val2: str):
+    def _run_save_and_analyze(self, save_kwargs: dict, image_base64: str, w_val: str):
         """저장 → AI 한 줄 요약 → AI 공감/그림분석을 한 다이얼로그 안에서 순서대로 보여준다."""
         import threading
 
@@ -1535,9 +1521,8 @@ class AppGUI(tk.Tk):
                 self._load_diary_list()
 
                 action = "수정" if save_kwargs.get("diary_id") is not None else "저장"
-                actual_weather_value = f"{w_val1}, {w_val2}" if w_val2 and w_val2 != "선택안함" else w_val1
                 self.statusbar.config(
-                    text=f"✅ 일기가 {action}되었습니다! 감정: {diary.emotion_label} | 현재 날씨: {actual_weather_value}",
+                    text=f"✅ 일기가 {action}되었습니다! 감정: {diary.emotion_label} | 현재 날씨: {w_val}",
                     fg=COLOR_SUCCESS
                 )
                 # 신규 작성의 경우 바로 새 일기 모드로 전환
