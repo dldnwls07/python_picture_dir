@@ -806,9 +806,11 @@ class AppGUI(QMainWindow):
         if self._secret_color_anim is not None:
             return
         anim = QVariantAnimation(self)
-        anim.setStartValue(QColor("#2a0a12"))
-        anim.setEndValue(QColor("#120a2a"))
-        anim.setDuration(6000)
+        anim.setStartValue(QColor("#7a0a26"))
+        # 중간에 짙은 보라를 거치게 해서 단순 왕복보다 색 변화가 크고 극적으로 느껴지게 한다.
+        anim.setKeyValueAt(0.5, QColor("#3d0a6e"))
+        anim.setEndValue(QColor("#0a1e7a"))
+        anim.setDuration(2500)
         anim.setEasingCurve(QEasingCurve.InOutSine)
         anim.valueChanged.connect(self._on_secret_color_changed)
         anim.finished.connect(self._flip_secret_color_direction)

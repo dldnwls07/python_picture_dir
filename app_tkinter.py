@@ -720,13 +720,17 @@ class AppGUI(tk.Tk):
         """불안한 느낌을 주기 위해 좌우 패널 배경색이 두 색 사이를 천천히 왕복하는 연출을 시작한다."""
         if self._secret_color_job is not None:
             return
-        self._secret_color_state = {"step": 0, "direction": 1, "total_steps": 40}
+        self._secret_color_state = {"step": 0, "direction": 1, "total_steps": 24}
         self._tick_secret_color_pulse()
 
     def _tick_secret_color_pulse(self):
         state = self._secret_color_state
         t = state["step"] / state["total_steps"]
-        color = self._interpolate_color("#2a0a12", "#120a2a", t)
+        # 진홍 → 짙은 보라 → 짙은 파랑을 차례로 거치게 해서 색 변화가 크고 극적으로 느껴지게 한다.
+        if t < 0.5:
+            color = self._interpolate_color("#7a0a26", "#3d0a6e", t * 2)
+        else:
+            color = self._interpolate_color("#3d0a6e", "#0a1e7a", (t - 0.5) * 2)
         style = ttk.Style(self)
         style.configure("TFrame", background=color)
 
@@ -738,7 +742,7 @@ class AppGUI(tk.Tk):
             state["step"] = 0
             state["direction"] = 1
 
-        self._secret_color_job = self.after(150, self._tick_secret_color_pulse)
+        self._secret_color_job = self.after(100, self._tick_secret_color_pulse)
 
     def _stop_secret_color_pulse(self):
         if self._secret_color_job is not None:
